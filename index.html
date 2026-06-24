@@ -133,7 +133,7 @@
       <input id="num-degx" type="number" min="0.5" max="30" step="0.5" value="3" title="Gain horizontal du regard (plus grand = plus sensible)">
     </label>
     <label><span>Sens. V</span>
-      <input id="num-degy" type="number" min="0.5" max="30" step="0.5" value="8" title="Gain vertical du regard (plus grand = plus sensible)">
+      <input id="num-degy" type="number" min="0.5" max="30" step="0.5" value="5" title="Gain vertical du regard (plus grand = plus sensible)">
     </label>
     <label><span>Cam</span>
       <select id="sel-cam"><option value="">Auto</option></select>
@@ -231,7 +231,7 @@ let notes     = genNotes(60, 'M');
 let running   = false;
 let mirrored  = true;
 let degX      = 3;    // gain horizontal du regard
-let degY      = 8;    // gain vertical du regard
+let degY      = 5;    // gain vertical du regard
 let activeIdx = -1;
 let activeVol = 0;
 let lastGaze  = { h: 0, v: 0 };  // regard lissé (et conservé pendant les clignements)
@@ -470,8 +470,9 @@ function eyeGaze(lm, iris, E) {
   ix /= iris.length; iy /= iris.length;            // centroïde de l'iris (précision)
   const o = lm[E.out], n = lm[E.in], t = lm[E.top], b = lm[E.bot];
   const midX = (o.x + n.x) / 2, midY = (t.y + b.y) / 2;
-  const w = Math.hypot(o.x - n.x, o.y - n.y) || 1e-6;
-  return { h: (ix - midX) / w, v: (iy - midY) / w, open: Math.abs(b.y - t.y) / w };
+  const w   = Math.hypot(o.x - n.x, o.y - n.y) || 1e-6;  // largeur de l'œil (repère horizontal)
+  const hgt = Math.abs(b.y - t.y) || 1e-6;               // hauteur de l'œil (repère vertical)
+  return { h: (ix - midX) / w, v: (iy - midY) / hgt, open: hgt / w };
 }
 
 // ── DRAW ─────────────────────────────────────────────────────────────────────
