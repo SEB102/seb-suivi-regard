@@ -238,7 +238,7 @@ let activeVol = 0;
 let lastGaze  = { h: 0, v: 0 };  // regard lissé (et conservé pendant les clignements)
 let calibState = null;           // séquence de calibration en cours (null = pas de calibration)
 let calib = null;                // mapping calibré { hL,hR,xL,xR, vT,vB,yT,yB }
-try { calib = JSON.parse(localStorage.getItem('gazeCalib') || 'null'); } catch (_) {}
+try { const c = JSON.parse(localStorage.getItem('gazePoly') || 'null'); if (c && Array.isArray(c.cX) && Array.isArray(c.cY)) calib = c; } catch (_) {}
 
 // ── NOTE EDITOR ──────────────────────────────────────────────────────────────
 const noteGrid   = document.getElementById('note-grid');
@@ -480,31 +480,70 @@ function eyeGaze(lm, iris, E) {
 }
 
 // ── CALIBRATION DU REGARD ────────────────────────────────────────────────────
-const CAL_TARGETS = [
-  { key: 'C', x: 0.50, y: 0.50, label: 'CENTRE' },
-  { key: 'L', x: 0.10, y: 0.50, label: 'GAUCHE' },
-  { key: 'R', x: 0.90, y: 0.50, label: 'DROITE' },
-  { key: 'T', x: 0.50, y: 0.12, label: 'HAUT'   },
-  { key: 'B', x: 0.50, y: 0.88, label: 'BAS'    },
-];
-const CAL_SETTLE = 800, CAL_CAPTURE = 800;   // ms : fixation puis capture
+// Grille 3×3 de points couvrant l'écran (estimation du point de regard)
+const CAL_TARGETS = [];
+for (const y of [0.10, 0.50, 0.90]) for (const x of [0.08, 0.50, 0.92]) CAL_TARGETS.push({ x, y });
+const CAL_SETTLE = 600, CAL_CAPTURE = 700;   // ms : fixation puis capture
+
+// Résolution d'un système linéaire n×n (Gauss-Jordan, pivot partiel)
+function solveLinear(A, b) {
+  const n = b.length, M = [];
+  for (let i = 0; i < n; i++) M.push(A[i].slice().concat([b[i]]));
+  for (let col = 0; col < n; col++) {
+    let piv = col;
+    for (let r = col + 1; r < n; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+    if (Math.abs(M[piv][col]) < 1e-12) return null;
+    [M[col], M[piv]] = [M[piv], M[col]];
+    const d = M[col][col];
+    for (let c = col; c <= n; c++) M[col][c] /= d;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = M[r][col];
+      for (let c = col; c <= n; c++) M[r][c] -= f * M[col][c];
+    }
+  }
+  return M.map(row => row[n]);
+}
+
+// Polynôme de degré 2 : [1, gx, gy, gx·gy, gx², gy²]
+function gazeFeat(gx, gy) { return [1, gx, gy, gx * gy, gx * gx, gy * gy]; }
+function evalPoly(c, gx, gy) {
+  const f = gazeFeat(gx, gy);
+  let s = 0; for (let i = 0; i < 6; i++) s += c[i] * f[i];
+  return s;
+}
+// Ajuste deux polynômes (écran X et Y) sur les échantillons, par moindres carrés
+function fitGaze(samples) {
+  const ATA = Array.from({ length: 6 }, () => new Array(6).fill(0));
+  const ATx = new Array(6).fill(0), ATy = new Array(6).fill(0);
+  for (const s of samples) {
+    const f = gazeFeat(s.gx, s.gy);
+    for (let a = 0; a < 6; a++) {
+      ATx[a] += f[a] * s.sx; ATy[a] += f[a] * s.sy;
+      for (let b = 0; b < 6; b++) ATA[a][b] += f[a] * f[b];
+    }
+  }
+  const cX = solveLinear(ATA.map(r => r.slice()), ATx);
+  const cY = solveLinear(ATA.map(r => r.slice()), ATy);
+  return (cX && cY) ? { cX, cY } : null;
+}
 
 function startCalibration() {
   if (!running) {
     document.getElementById('status').textContent = 'Clique d’abord ▶ START, puis Calibrer';
     return;
   }
-  calibState = { i: 0, phase: 'settle', t0: performance.now(), sum: { h: 0, v: 0 }, n: 0, results: {} };
+  calibState = { i: 0, phase: 'settle', t0: performance.now(), sum: { h: 0, v: 0 }, n: 0, samples: [] };
 }
 
-function finalizeCalibration(R) {
-  const hSpan = R.R.h - R.L.h, vSpan = R.B.v - R.T.v;
-  if (Math.abs(hSpan) > 1e-3 && Math.abs(vSpan) > 1e-3) {
-    calib = { hL: R.L.h, hR: R.R.h, xL: 0.10, xR: 0.90, vT: R.T.v, vB: R.B.v, yT: 0.12, yB: 0.88 };
-    try { localStorage.setItem('gazeCalib', JSON.stringify(calib)); } catch (_) {}
-    document.getElementById('status').textContent = 'Calibré ✓ — joue avec le regard';
+function finalizeCalibration(samples) {
+  const fit = fitGaze(samples);
+  if (fit) {
+    calib = fit;
+    try { localStorage.setItem('gazePoly', JSON.stringify(calib)); } catch (_) {}
+    document.getElementById('status').textContent = 'Calibré ✓ — le point suit ton regard';
   } else {
-    document.getElementById('status').textContent = 'Calibration trop faible — recommence en fixant bien chaque point';
+    document.getElementById('status').textContent = 'Calibration ratée — recommence en fixant bien chaque point';
   }
 }
 
@@ -517,9 +556,11 @@ function calibrationFrame(haveFace) {
   } else {
     if (haveFace) { cs.sum.h += lastGaze.h; cs.sum.v += lastGaze.v; cs.n++; }
     if (el >= CAL_CAPTURE) {
-      cs.results[t.key] = cs.n ? { h: cs.sum.h / cs.n, v: cs.sum.v / cs.n } : { h: lastGaze.h, v: lastGaze.v };
+      const gx = cs.n ? cs.sum.h / cs.n : lastGaze.h;
+      const gy = cs.n ? cs.sum.v / cs.n : lastGaze.v;
+      cs.samples.push({ gx, gy, sx: t.x, sy: t.y });
       cs.i++;
-      if (cs.i >= CAL_TARGETS.length) { finalizeCalibration(cs.results); calibState = null; }
+      if (cs.i >= CAL_TARGETS.length) { finalizeCalibration(cs.samples); calibState = null; }
       else { cs.phase = 'settle'; cs.t0 = now; }
     }
   }
@@ -544,7 +585,7 @@ function calibrationFrame(haveFace) {
   const yB = tc.y < 0.35 ? H * 0.86 : H * 0.23;
   ctx2d.font = `bold ${Math.round(S * 0.045)}px monospace`;
   ctx2d.fillStyle = '#fff';
-  ctx2d.fillText('Regarde le point — ' + tc.label, W / 2, yA);
+  ctx2d.fillText('Fixe le point', W / 2, yA);
   ctx2d.font = `${Math.round(S * 0.03)}px monospace`;
   ctx2d.fillStyle = '#9aab9f';
   ctx2d.fillText(`${calibState.i + 1}/${CAL_TARGETS.length}  ${capturing ? '… capture …' : 'prépare-toi'}`, W / 2, yB);
@@ -589,9 +630,9 @@ function drawFrame(res) {
   let cursor = null;
   if (haveFace) {
     let fx, fy;
-    if (calib) {                          // mapping calibré (regard → écran)
-      fx = calib.xL + (lastGaze.h - calib.hL) * (calib.xR - calib.xL) / (calib.hR - calib.hL);
-      fy = calib.yT + (lastGaze.v - calib.vT) * (calib.yB - calib.yT) / (calib.vB - calib.vT);
+    if (calib) {                          // point de regard : polynômes calibrés (regard → écran)
+      fx = evalPoly(calib.cX, lastGaze.h, lastGaze.v);
+      fy = evalPoly(calib.cY, lastGaze.h, lastGaze.v);
     } else {                              // sans calibration : gains manuels (Sens. H / V)
       fx = 0.5 + (mirrored ? -1 : 1) * lastGaze.h * degX;
       fy = 0.5 + lastGaze.v * degY;
