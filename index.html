@@ -590,13 +590,14 @@ function calibrationFrame(haveFace) {
         cs.i++;
         if (cs.i >= CAL_TARGETS.length) {
           const fit = fitGaze(cs.samples);
-          if (!fit) { document.getElementById('status').textContent = 'Calibration ratée — recommence'; calibState = null; }
-          else {
-            cs.fit = fit;
-            const k = cs.hcount || 1;
-            cs.ref = { yaw: cs.hsum.yaw / k, pitch: cs.hsum.pitch / k, cx: cs.hsum.cx / k, cy: cs.hsum.cy / k };
-            cs.stage = 'head'; cs.t0 = now; cs.headRows = [];
+          if (fit) {
+            calib = { cX: fit.cX, cY: fit.cY };
+            try { localStorage.setItem('gazePoly2', JSON.stringify(calib)); } catch (_) {}
+            document.getElementById('status').textContent = 'Calibré ✓ — le point suit ton regard';
+          } else {
+            document.getElementById('status').textContent = 'Calibration ratée — recommence';
           }
+          calibState = null;
         } else { cs.phase = 'settle'; cs.t0 = now; }
       }
     }
@@ -682,11 +683,8 @@ function drawFrame(res) {
     const gR = eyeGaze(lm, IRIS_R, EYE_R);
     if ((gL.open + gR.open) / 2 > 0.12) {          // yeux ouverts → on met à jour
       const hRaw = (gL.h + gR.h) / 2, vRaw = (gL.v + gR.v) / 2;
-      // lissage adaptatif : forte inertie au repos (anti-tremblement), réactif sur les grands mouvements
-      const dh = hRaw - lastGaze.h, dv = vRaw - lastGaze.v;
-      const alpha = Math.min(0.5, 0.05 + Math.hypot(dh, dv) * 3);
-      lastGaze.h += dh * alpha;
-      lastGaze.v += dv * alpha;
+      lastGaze.h += (hRaw - lastGaze.h) * 0.25;    // inertie modérée (suit de façon fiable)
+      lastGaze.v += (vRaw - lastGaze.v) * 0.25;
     }
     // pose de tête : rotation (matrice) + translation (centroïde du visage)
     let hy = lastHead.yaw, hp = lastHead.pitch;
@@ -710,11 +708,6 @@ function drawFrame(res) {
     if (calib) {                          // point de regard : polynômes calibrés (regard → écran)
       fx = evalPoly(calib.cX, lastGaze.h, lastGaze.v);
       fy = evalPoly(calib.cY, lastGaze.h, lastGaze.v);
-      if (calib.hcX && calib.ref) {       // compensation des mouvements de tête
-        const hf = headFeat(lastHead, calib.ref);
-        fx -= evalHeadCorr(calib.hcX, hf);
-        fy -= evalHeadCorr(calib.hcY, hf);
-      }
     } else {                              // sans calibration : gains manuels (Sens. H / V)
       fx = 0.5 + (mirrored ? -1 : 1) * lastGaze.h * degX;
       fy = 0.5 + lastGaze.v * degY;
