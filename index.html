@@ -228,7 +228,7 @@ function parseFR(s) {
 }
 
 // ── STATE ────────────────────────────────────────────────────────────────────
-let notes     = genNotes(60, 'M');
+let notes     = genNotes(60, 'M', SCALES.M.length);   // 1 octave (7 notes en majeur)
 let running   = false;
 let mirrored  = true;
 let degX      = 3;    // gain horizontal du regard
@@ -274,7 +274,7 @@ const selScale = document.getElementById('sel-scale');
 const selRoot  = document.getElementById('sel-root');
 
 function regenFromScale() {
-  notes = genNotes(parseInt(selRoot.value), selScale.value);
+  notes = genNotes(parseInt(selRoot.value), selScale.value, SCALES[selScale.value].length);
   buildNoteGrid();
 }
 
@@ -493,7 +493,7 @@ function headPose(d) {
 // Grille 4×4 (16 points) couvrant l'écran (estimation du point de regard)
 const CAL_TARGETS = [];
 for (const y of [0.08, 0.37, 0.63, 0.92]) for (const x of [0.06, 0.37, 0.63, 0.94]) CAL_TARGETS.push({ x, y });
-const CAL_SETTLE = 500, CAL_CAPTURE = 600;   // ms : fixation puis capture (par point)
+const CAL_SETTLE = 700, CAL_CAPTURE = 1000;  // ms : fixation puis capture (par point)
 const HEAD_MS = 6000, HEAD_SETTLE = 1000;    // ms : phase "bouge la tête" (compensation)
 
 // Résolution d'un système linéaire n×n (Gauss-Jordan, pivot partiel)
@@ -682,8 +682,11 @@ function drawFrame(res) {
     const gR = eyeGaze(lm, IRIS_R, EYE_R);
     if ((gL.open + gR.open) / 2 > 0.12) {          // yeux ouverts → on met à jour
       const hRaw = (gL.h + gR.h) / 2, vRaw = (gL.v + gR.v) / 2;
-      lastGaze.h += (hRaw - lastGaze.h) * 0.35;    // lissage exponentiel
-      lastGaze.v += (vRaw - lastGaze.v) * 0.35;
+      // lissage adaptatif : forte inertie au repos (anti-tremblement), réactif sur les grands mouvements
+      const dh = hRaw - lastGaze.h, dv = vRaw - lastGaze.v;
+      const alpha = Math.min(0.5, 0.05 + Math.hypot(dh, dv) * 3);
+      lastGaze.h += dh * alpha;
+      lastGaze.v += dv * alpha;
     }
     // pose de tête : rotation (matrice) + translation (centroïde du visage)
     let hy = lastHead.yaw, hp = lastHead.pitch;
