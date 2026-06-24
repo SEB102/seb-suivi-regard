@@ -236,9 +236,10 @@ let degY      = 5;    // gain vertical du regard
 let activeIdx = -1;
 let activeVol = 0;
 let lastGaze  = { h: 0, v: 0 };  // regard lissé (et conservé pendant les clignements)
+let lastHead  = { yaw: 0, pitch: 0, cx: 0.5, cy: 0.5 };  // pose de tête lissée
 let calibState = null;           // séquence de calibration en cours (null = pas de calibration)
-let calib = null;                // mapping calibré { hL,hR,xL,xR, vT,vB,yT,yB }
-try { const c = JSON.parse(localStorage.getItem('gazePoly') || 'null'); if (c && Array.isArray(c.cX) && Array.isArray(c.cY)) calib = c; } catch (_) {}
+let calib = null;                // mapping calibré { cX, cY, ref, hcX, hcY }
+try { const c = JSON.parse(localStorage.getItem('gazePoly2') || 'null'); if (c && Array.isArray(c.cX) && Array.isArray(c.cY)) calib = c; } catch (_) {}
 
 // ── NOTE EDITOR ──────────────────────────────────────────────────────────────
 const noteGrid   = document.getElementById('note-grid');
@@ -452,7 +453,8 @@ const hl = await FaceLandmarker.createFromOptions(fs, {
     delegate: 'GPU'
   },
   runningMode: 'VIDEO',
-  numFaces: 1
+  numFaces: 1,
+  outputFacialTransformationMatrixes: true   // pose de tête (compensation des mouvements)
 });
 
 document.getElementById('status').textContent =
@@ -479,11 +481,20 @@ function eyeGaze(lm, iris, E) {
   return { h: (ix - midX) / w, v: (iy - midY) / hgt, open: hgt / w };
 }
 
+// Pose de tête (degrés) depuis la matrice de transformation faciale (column-major 4x4).
+// Le signe exact importe peu : la régression apprend la relation telle quelle.
+function headPose(d) {
+  const r00 = d[0], r10 = d[1], r20 = d[2], r21 = d[6], r22 = d[10];
+  const sy = Math.hypot(r00, r10);
+  return { yaw: Math.atan2(-r20, sy) * 180 / Math.PI, pitch: Math.atan2(r21, r22) * 180 / Math.PI };
+}
+
 // ── CALIBRATION DU REGARD ────────────────────────────────────────────────────
-// Grille 3×3 de points couvrant l'écran (estimation du point de regard)
+// Grille 4×4 (16 points) couvrant l'écran (estimation du point de regard)
 const CAL_TARGETS = [];
-for (const y of [0.10, 0.50, 0.90]) for (const x of [0.08, 0.50, 0.92]) CAL_TARGETS.push({ x, y });
-const CAL_SETTLE = 600, CAL_CAPTURE = 700;   // ms : fixation puis capture
+for (const y of [0.08, 0.37, 0.63, 0.92]) for (const x of [0.06, 0.37, 0.63, 0.94]) CAL_TARGETS.push({ x, y });
+const CAL_SETTLE = 500, CAL_CAPTURE = 600;   // ms : fixation puis capture (par point)
+const HEAD_MS = 6000, HEAD_SETTLE = 1000;    // ms : phase "bouge la tête" (compensation)
 
 // Résolution d'un système linéaire n×n (Gauss-Jordan, pivot partiel)
 function solveLinear(A, b) {
@@ -528,67 +539,121 @@ function fitGaze(samples) {
   return (cX && cY) ? { cX, cY } : null;
 }
 
+// Compensation de la pose de tête : on apprend l'erreur du polynôme œil
+// en fonction de l'écart de pose : err ≈ c0 + c1·Δyaw + c2·Δpitch + c3·Δcx + c4·Δcy
+function headFeat(h, ref) { return [1, h.yaw - ref.yaw, h.pitch - ref.pitch, h.cx - ref.cx, h.cy - ref.cy]; }
+function evalHeadCorr(c, f) { let s = 0; for (let i = 0; i < 5; i++) s += c[i] * f[i]; return s; }
+function fitHeadCorr(rows) {                 // rows: [{ f:[5], ex, ey }]
+  const A = Array.from({ length: 5 }, () => new Array(5).fill(0));
+  const bx = new Array(5).fill(0), by = new Array(5).fill(0);
+  for (const r of rows) for (let a = 0; a < 5; a++) {
+    bx[a] += r.f[a] * r.ex; by[a] += r.f[a] * r.ey;
+    for (let b = 0; b < 5; b++) A[a][b] += r.f[a] * r.f[b];
+  }
+  const hcX = solveLinear(A.map(r => r.slice()), bx);
+  const hcY = solveLinear(A.map(r => r.slice()), by);
+  return (hcX && hcY) ? { hcX, hcY } : null;
+}
+
 function startCalibration() {
   if (!running) {
     document.getElementById('status').textContent = 'Clique d’abord ▶ START, puis Calibrer';
     return;
   }
-  calibState = { i: 0, phase: 'settle', t0: performance.now(), sum: { h: 0, v: 0 }, n: 0, samples: [] };
+  calibState = {
+    stage: 'grid', i: 0, phase: 'settle', t0: performance.now(),
+    sum: { h: 0, v: 0 }, n: 0, samples: [],
+    hsum: { yaw: 0, pitch: 0, cx: 0, cy: 0 }, hcount: 0,   // pose de référence (tête immobile)
+    fit: null, ref: null, headRows: []                      // phase de compensation de tête
+  };
 }
 
-function finalizeCalibration(samples) {
-  const fit = fitGaze(samples);
-  if (fit) {
-    calib = fit;
-    try { localStorage.setItem('gazePoly', JSON.stringify(calib)); } catch (_) {}
-    document.getElementById('status').textContent = 'Calibré ✓ — le point suit ton regard';
-  } else {
-    document.getElementById('status').textContent = 'Calibration ratée — recommence en fixant bien chaque point';
-  }
-}
-
-// Une frame de calibration : capture temporisée (fixation → moyenne) + rendu des cibles.
+// Une frame de calibration : étape "grille" (œil) puis étape "tête" (compensation) + rendu.
 function calibrationFrame(haveFace) {
-  const cs = calibState, now = performance.now(), el = now - cs.t0, t = CAL_TARGETS[cs.i];
+  const cs = calibState, now = performance.now();
+  const W = overlay.width, H = overlay.height, S = Math.min(W, H);
 
-  if (cs.phase === 'settle') {
-    if (el >= CAL_SETTLE) { cs.phase = 'capture'; cs.t0 = now; cs.sum = { h: 0, v: 0 }; cs.n = 0; }
+  // ===== ÉTAPE 1 : GRILLE (regard, tête immobile) =====
+  if (cs.stage === 'grid') {
+    const el = now - cs.t0, t = CAL_TARGETS[cs.i];
+    if (cs.phase === 'settle') {
+      if (el >= CAL_SETTLE) { cs.phase = 'capture'; cs.t0 = now; cs.sum = { h: 0, v: 0 }; cs.n = 0; }
+    } else {
+      if (haveFace) {
+        cs.sum.h += lastGaze.h; cs.sum.v += lastGaze.v; cs.n++;
+        cs.hsum.yaw += lastHead.yaw; cs.hsum.pitch += lastHead.pitch;
+        cs.hsum.cx += lastHead.cx;  cs.hsum.cy += lastHead.cy;  cs.hcount++;
+      }
+      if (el >= CAL_CAPTURE) {
+        const gx = cs.n ? cs.sum.h / cs.n : lastGaze.h, gy = cs.n ? cs.sum.v / cs.n : lastGaze.v;
+        cs.samples.push({ gx, gy, sx: t.x, sy: t.y });
+        cs.i++;
+        if (cs.i >= CAL_TARGETS.length) {
+          const fit = fitGaze(cs.samples);
+          if (!fit) { document.getElementById('status').textContent = 'Calibration ratée — recommence'; calibState = null; }
+          else {
+            cs.fit = fit;
+            const k = cs.hcount || 1;
+            cs.ref = { yaw: cs.hsum.yaw / k, pitch: cs.hsum.pitch / k, cx: cs.hsum.cx / k, cy: cs.hsum.cy / k };
+            cs.stage = 'head'; cs.t0 = now; cs.headRows = [];
+          }
+        } else { cs.phase = 'settle'; cs.t0 = now; }
+      }
+    }
   } else {
-    if (haveFace) { cs.sum.h += lastGaze.h; cs.sum.v += lastGaze.v; cs.n++; }
-    if (el >= CAL_CAPTURE) {
-      const gx = cs.n ? cs.sum.h / cs.n : lastGaze.h;
-      const gy = cs.n ? cs.sum.v / cs.n : lastGaze.v;
-      cs.samples.push({ gx, gy, sx: t.x, sy: t.y });
-      cs.i++;
-      if (cs.i >= CAL_TARGETS.length) { finalizeCalibration(cs.samples); calibState = null; }
-      else { cs.phase = 'settle'; cs.t0 = now; }
+    // ===== ÉTAPE 2 : TÊTE (fixer le centre, bouger la tête) =====
+    const el = now - cs.t0;
+    if (haveFace && el > HEAD_SETTLE) {
+      const pX = evalPoly(cs.fit.cX, lastGaze.h, lastGaze.v);
+      const pY = evalPoly(cs.fit.cY, lastGaze.h, lastGaze.v);
+      cs.headRows.push({ f: headFeat(lastHead, cs.ref), ex: pX - 0.5, ey: pY - 0.5 });
+    }
+    if (el >= HEAD_MS) {
+      const hc = cs.headRows.length > 20 ? fitHeadCorr(cs.headRows) : null;
+      calib = { cX: cs.fit.cX, cY: cs.fit.cY, ref: cs.ref, hcX: hc ? hc.hcX : null, hcY: hc ? hc.hcY : null };
+      try { localStorage.setItem('gazePoly2', JSON.stringify(calib)); } catch (_) {}
+      document.getElementById('status').textContent = hc ? 'Calibré ✓ — regard + tête compensée' : 'Calibré ✓ (sans compensation tête)';
+      calibState = null;
     }
   }
 
-  const W = overlay.width, H = overlay.height, S = Math.min(W, H);
+  // ===== RENDU =====
   ctx2d.fillStyle = '#0a0a10'; ctx2d.fillRect(0, 0, W, H);
   if (!calibState) return;
-
-  const tc = CAL_TARGETS[calibState.i], capturing = calibState.phase === 'capture';
-  const tx = tc.x * W, ty = tc.y * H, r = S * (capturing ? 0.05 : 0.065);
-  ctx2d.beginPath(); ctx2d.arc(tx, ty, r * 1.9, 0, Math.PI * 2);
-  ctx2d.fillStyle = capturing ? 'rgba(0,255,130,0.22)' : 'rgba(255,255,255,0.10)'; ctx2d.fill();
-  ctx2d.beginPath(); ctx2d.arc(tx, ty, r, 0, Math.PI * 2);
-  ctx2d.fillStyle = capturing ? '#00ff82' : '#ffffff'; ctx2d.fill();
-  ctx2d.strokeStyle = '#0a0a10'; ctx2d.lineWidth = 2;
-  ctx2d.beginPath();
-  ctx2d.moveTo(tx - r * 0.5, ty); ctx2d.lineTo(tx + r * 0.5, ty);
-  ctx2d.moveTo(tx, ty - r * 0.5); ctx2d.lineTo(tx, ty + r * 0.5); ctx2d.stroke();
-
   ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
-  const yA = tc.y < 0.35 ? H * 0.80 : H * 0.16;
-  const yB = tc.y < 0.35 ? H * 0.86 : H * 0.23;
-  ctx2d.font = `bold ${Math.round(S * 0.045)}px monospace`;
-  ctx2d.fillStyle = '#fff';
-  ctx2d.fillText('Fixe le point', W / 2, yA);
-  ctx2d.font = `${Math.round(S * 0.03)}px monospace`;
-  ctx2d.fillStyle = '#9aab9f';
-  ctx2d.fillText(`${calibState.i + 1}/${CAL_TARGETS.length}  ${capturing ? '… capture …' : 'prépare-toi'}`, W / 2, yB);
+
+  if (calibState.stage === 'grid') {
+    const tc = CAL_TARGETS[calibState.i], capturing = calibState.phase === 'capture';
+    const tx = tc.x * W, ty = tc.y * H, rr = S * (capturing ? 0.045 : 0.06);
+    ctx2d.beginPath(); ctx2d.arc(tx, ty, rr * 1.9, 0, Math.PI * 2);
+    ctx2d.fillStyle = capturing ? 'rgba(0,255,130,0.22)' : 'rgba(255,255,255,0.10)'; ctx2d.fill();
+    ctx2d.beginPath(); ctx2d.arc(tx, ty, rr, 0, Math.PI * 2);
+    ctx2d.fillStyle = capturing ? '#00ff82' : '#ffffff'; ctx2d.fill();
+    ctx2d.strokeStyle = '#0a0a10'; ctx2d.lineWidth = 2;
+    ctx2d.beginPath();
+    ctx2d.moveTo(tx - rr * 0.5, ty); ctx2d.lineTo(tx + rr * 0.5, ty);
+    ctx2d.moveTo(tx, ty - rr * 0.5); ctx2d.lineTo(tx, ty + rr * 0.5); ctx2d.stroke();
+    const yA = tc.y < 0.35 ? H * 0.82 : H * 0.14, yB = tc.y < 0.35 ? H * 0.88 : H * 0.20;
+    ctx2d.font = `bold ${Math.round(S * 0.04)}px monospace`; ctx2d.fillStyle = '#fff';
+    ctx2d.fillText('Fixe le point (tête immobile)', W / 2, yA);
+    ctx2d.font = `${Math.round(S * 0.028)}px monospace`; ctx2d.fillStyle = '#9aab9f';
+    ctx2d.fillText(`Regard ${calibState.i + 1}/${CAL_TARGETS.length}`, W / 2, yB);
+  } else {
+    const tx = W * 0.5, ty = H * 0.5, rr = S * 0.05;
+    ctx2d.beginPath(); ctx2d.arc(tx, ty, rr * 1.9, 0, Math.PI * 2);
+    ctx2d.fillStyle = 'rgba(0,255,130,0.18)'; ctx2d.fill();
+    ctx2d.beginPath(); ctx2d.arc(tx, ty, rr, 0, Math.PI * 2);
+    ctx2d.fillStyle = '#00ff82'; ctx2d.fill();
+    ctx2d.font = `bold ${Math.round(S * 0.042)}px monospace`; ctx2d.fillStyle = '#fff';
+    ctx2d.fillText('Fixe le centre et BOUGE LA TÊTE', W / 2, H * 0.16);
+    ctx2d.font = `${Math.round(S * 0.03)}px monospace`; ctx2d.fillStyle = '#9aab9f';
+    ctx2d.fillText('gauche-droite, haut-bas, lentement', W / 2, H * 0.22);
+    // barre de progression
+    const prog = Math.max(0, Math.min(1, ((now - calibState.t0) - HEAD_SETTLE) / (HEAD_MS - HEAD_SETTLE)));
+    const bw = W * 0.5, bx = W * 0.25, by = H * 0.86, bh = S * 0.02;
+    ctx2d.strokeStyle = '#445'; ctx2d.lineWidth = 1; ctx2d.strokeRect(bx, by, bw, bh);
+    ctx2d.fillStyle = '#00ff82'; ctx2d.fillRect(bx, by, bw * prog, bh);
+  }
 }
 
 // ── DRAW ─────────────────────────────────────────────────────────────────────
@@ -620,6 +685,15 @@ function drawFrame(res) {
       lastGaze.h += (hRaw - lastGaze.h) * 0.35;    // lissage exponentiel
       lastGaze.v += (vRaw - lastGaze.v) * 0.35;
     }
+    // pose de tête : rotation (matrice) + translation (centroïde du visage)
+    let hy = lastHead.yaw, hp = lastHead.pitch;
+    const mats = res.facialTransformationMatrixes;
+    if (mats && mats.length) { const e = headPose(mats[0].data); hy = e.yaw; hp = e.pitch; }
+    let fcx = 0, fcy = 0; for (const p of lm) { fcx += p.x; fcy += p.y; } fcx /= lm.length; fcy /= lm.length;
+    lastHead.yaw   += (hy  - lastHead.yaw)   * 0.3;
+    lastHead.pitch += (hp  - lastHead.pitch) * 0.3;
+    lastHead.cx    += (fcx - lastHead.cx)    * 0.3;
+    lastHead.cy    += (fcy - lastHead.cy)    * 0.3;
     haveFace = true;
   }
 
@@ -633,6 +707,11 @@ function drawFrame(res) {
     if (calib) {                          // point de regard : polynômes calibrés (regard → écran)
       fx = evalPoly(calib.cX, lastGaze.h, lastGaze.v);
       fy = evalPoly(calib.cY, lastGaze.h, lastGaze.v);
+      if (calib.hcX && calib.ref) {       // compensation des mouvements de tête
+        const hf = headFeat(lastHead, calib.ref);
+        fx -= evalHeadCorr(calib.hcX, hf);
+        fy -= evalHeadCorr(calib.hcY, hf);
+      }
     } else {                              // sans calibration : gains manuels (Sens. H / V)
       fx = 0.5 + (mirrored ? -1 : 1) * lastGaze.h * degX;
       fy = 0.5 + lastGaze.v * degY;
