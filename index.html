@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SUIVI REGARD</title>
+  <style>
+    :root {
+      --bg: #0a0a10; --panel: #12121c; --accent: #00e87a;
+      --dim: #333; --text: #bbb;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Courier New', monospace;
+      display: flex; flex-direction: column; align-items: center;
+      min-height: 100vh; gap: 6px; padding: 8px;
+    }
+    h1 {
+      color: var(--accent); font-size: 1em;
+      letter-spacing: .5em; text-transform: uppercase; padding: 6px 0;
+    }
+    #video-wrap {
+      position: relative; line-height: 0; border: 1px solid #1a1a2a;
+      width: min(96vw, 104vh, 1100px); aspect-ratio: 4 / 3;
+      background: #0a0a10; margin: 0 auto;
+    }
+    #videoel { display: none; }
+    #overlay { position: absolute; inset: 0; display: block; cursor: crosshair; width: 100%; height: 100%; touch-action: none; }
+    #video-wrap:fullscreen { width: 100vw; height: 100vh; aspect-ratio: auto; max-width: none; border: none; }
+    .panel {
+      background: var(--panel); border: 1px solid #1e1e30;
+      border-radius: 4px; padding: 7px 12px;
+      display: flex; flex-wrap: wrap; gap: 10px;
+      align-items: center; width: 100%; max-width: 640px;
+    }
+    button {
+      background: transparent; color: var(--accent);
+      border: 1px solid var(--accent); padding: 5px 13px;
+      cursor: pointer; font-family: monospace; font-size: .82em;
+      border-radius: 3px; transition: background .12s; white-space: nowrap;
+    }
+    button:hover { background: rgba(0,232,122,.1); }
+    button.on { background: var(--accent); color: #000; font-weight: bold; }
+    label { display: flex; align-items: center; gap: 5px; font-size: .78em; color: #555; }
+    label span { color: var(--text); }
+    select {
+      background: var(--bg); color: var(--text);
+      border: 1px solid #2a2a3a; padding: 3px 5px;
+      font-family: monospace; font-size: .78em; border-radius: 2px;
+    }
+    input[type=number] {
+      width: 48px; background: var(--bg); color: var(--accent);
+      border: 1px solid #2a2a3a; padding: 3px 4px;
+      font-family: monospace; font-size: .78em; border-radius: 2px;
+    }
+    input[type=range] { width: 70px; accent-color: var(--accent); }
+    input[type=checkbox] { accent-color: var(--accent); width: 13px; height: 13px; }
+    #note-big {
+      font-size: 1.5em; color: var(--accent); font-weight: bold;
+      min-width: 72px; text-align: center; letter-spacing: .05em;
+    }
+    #note-editor { display: none; width: 100%; max-width: 640px; }
+    #note-editor.open { display: block; }
+    .note-editor-hdr {
+      background: var(--panel); border: 1px solid #1e1e30;
+      border-bottom: none; border-radius: 4px 4px 0 0;
+      padding: 5px 12px; font-size: .75em; color: #555;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .note-editor-hdr button {
+      border: none; padding: 2px 8px; font-size: .78em;
+      color: #555; border-color: #333;
+    }
+    .note-grid {
+      background: var(--panel); border: 1px solid #1e1e30;
+      border-top: none; border-radius: 0 0 4px 4px;
+      padding: 6px;
+      display: grid; grid-template-columns: repeat(15, 1fr); gap: 3px;
+    }
+    .note-cell { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+    .note-cell .idx { font-size: .58em; color: #333; }
+    .note-cell input {
+      width: 100%; background: var(--bg); color: var(--accent);
+      border: 1px solid #2a2a3a; text-align: center;
+      font-family: monospace; font-size: .68em; padding: 3px 1px;
+      border-radius: 2px;
+    }
+    .note-cell input:focus { border-color: var(--accent); outline: none; }
+    #status { font-size: .7em; color: #888; text-align: center; }
+    body { touch-action: manipulation; user-select: none; }
+    @media (max-width: 500px) {
+      h1 { font-size: .8em; letter-spacing: .2em; }
+      button { padding: 9px 12px; font-size: .9em; }
+      select, input[type=range] { font-size: .85em; }
+      .note-grid { grid-template-columns: repeat(5, 1fr); }
+      #note-big { font-size: 1.2em; }
+    }
+  </style>
+</head>
+<body>
+  <h1>⚡ SUIVI REGARD</h1>
+
+  <div id="video-wrap">
+    <video id="videoel" width="640" height="480"></video>
+    <canvas id="overlay" width="640" height="480"></canvas>
+  </div>
+
+  <div class="panel">
+    <button id="btn-start">▶ START</button>
+    <label><span>Gamme</span>
+      <select id="sel-scale">
+        <option value="M">Majeur</option>
+        <option value="mh">min. harm.</option>
+        <option value="Penta">Pentatonique</option>
+        <option value="Myx">Mixolydien</option>
+        <option value="Dor">Dorien</option>
+      </select>
+    </label>
+    <label><span>Fond.</span>
+      <select id="sel-root">
+        <option value="60">DO4</option>
+        <option value="62">RÉ4</option>
+        <option value="64">MI4</option>
+        <option value="65">FA4</option>
+        <option value="67">SOL4</option>
+        <option value="69">LA4</option>
+        <option value="71">SI4</option>
+        <option value="72">DO5</option>
+      </select>
+    </label>
+    <label><span>Sens. H</span>
+      <input id="num-degx" type="number" min="0.5" max="30" step="0.5" value="3" title="Gain horizontal du regard (plus grand = plus sensible)">
+    </label>
+    <label><span>Sens. V</span>
+      <input id="num-degy" type="number" min="0.5" max="30" step="0.5" value="8" title="Gain vertical du regard (plus grand = plus sensible)">
+    </label>
+    <label><span>Cam</span>
+      <select id="sel-cam"><option value="">Auto</option></select>
+    </label>
+    <label><span>Vol</span>
+      <input id="rng-vol" type="range" min="0" max="1" step="0.01" value="0.7">
+    </label>
+    <label>
+      <input id="chk-mirror" type="checkbox" checked>
+      <span>Miroir</span>
+    </label>
+    <button id="btn-fs" title="Plein écran (Échap pour sortir)">⛶ Plein écran</button>
+    <div id="note-big">—</div>
+    <button id="btn-edit" style="margin-left:auto">NOTES ▾</button>
+  </div>
+
+  <div id="note-editor">
+    <div class="note-editor-hdr">
+      <span>Notes — nom FR (ex: LA4) ou numéro MIDI</span>
+      <button id="btn-regen">↺ Regénérer</button>
+    </div>
+    <div class="note-grid" id="note-grid"></div>
+  </div>
+
+  <div id="status">Chargement du modèle MediaPipe Face…</div>
+
+<script type="module">
+(async () => {
+
+// ── SCALES ──────────────────────────────────────────────────────────────────
+const SCALES = {
+  M:     [0,2,4,5,7,9,11],
+  mh:    [0,2,3,5,7,8,11],
+  Penta: [0,2,4,7,9],
+  Myx:   [0,2,4,5,7,9,10],
+  Dor:   [0,2,3,5,7,9,10]
+};
+
+const FR = ['DO','DO#','RÉ','RÉ#','MI','FA','FA#','SOL','SOL#','LA','LA#','SI'];
+
+function midiToName(m) {
+  if (m < 0 || m > 127) return '?';
+  return FR[m % 12] + (Math.floor(m / 12) - 1);
+}
+function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+// Couleur par degré (quelle que soit l'octave) — classe de hauteur relative à la fondamentale
+const DEGREE_COLORS = [
+  '#e23b3b', // 1 fondamentale — rouge
+  '#9a5a2b', // 2 — marron
+  '#36a050', // 3 — vert
+  '#f48cb6', // 4 — rose
+  '#3e6fe9', // 5 — bleu
+  '#ebc828', // 6 — jaune
+  '#17171f'  // 7 — noir
+];
+const PC_DEGREE = [0, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 6]; // demi-tons depuis la fond. → index de degré
+function colorOf(midi) {
+  const root = parseInt(selRoot.value) || 60;
+  const pc = (((midi - root) % 12) + 12) % 12;
+  return DEGREE_COLORS[PC_DEGREE[pc]];
+}
+
+function genNotes(root, mode, n = 15) {
+  const ivs = SCALES[mode];
+  const out = []; let oct = 0, i = 0;
+  while (out.length < n) {
+    const note = root + oct * 12 + ivs[i % ivs.length];
+    if (note <= 127) out.push(note);
+    if (++i % ivs.length === 0) oct++;
+    if (oct > 6) break;
+  }
+  return out;
+}
+
+function parseFR(s) {
+  const n = parseInt(s);
+  if (!isNaN(n) && n >= 0 && n <= 127) return n;
+  const up = s.trim().toUpperCase();
+  const map = [
+    ['SOL#',8],['DO#',1],['RÉ#',3],['RE#',3],['FA#',6],['LA#',10],
+    ['SOL',7],['DO',0],['RÉ',2],['RE',2],['MI',4],['FA',5],['LA',9],['SI',11]
+  ];
+  for (const [name, st] of map) {
+    if (up.startsWith(name)) {
+      const oct = parseInt(up.slice(name.length));
+      if (!isNaN(oct) && oct >= -1 && oct <= 9) return (oct + 1) * 12 + st;
+    }
+  }
+  return null;
+}
+
+// ── STATE ────────────────────────────────────────────────────────────────────
+let notes     = genNotes(60, 'M');
+let running   = false;
+let mirrored  = true;
+let degX      = 3;    // gain horizontal du regard
+let degY      = 8;    // gain vertical du regard
+let activeIdx = -1;
+let activeVol = 0;
+let lastGaze  = { h: 0, v: 0 };  // regard lissé (et conservé pendant les clignements)
+
+// ── NOTE EDITOR ──────────────────────────────────────────────────────────────
+const noteGrid   = document.getElementById('note-grid');
+const noteInputs = [];
+
+function buildNoteGrid() {
+  noteGrid.innerHTML = '';
+  noteInputs.length = 0;
+  notes.forEach((midi, i) => {
+    const cell = document.createElement('div');
+    cell.className = 'note-cell';
+    const idx = document.createElement('div');
+    idx.className = 'idx';
+    idx.textContent = i + 1;
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.value = midiToName(midi);
+    inp.addEventListener('change', () => {
+      const v = parseFR(inp.value);
+      if (v !== null) { notes[i] = v; inp.value = midiToName(v); }
+      else inp.value = midiToName(notes[i]);
+    });
+    noteInputs.push(inp);
+    cell.appendChild(idx);
+    cell.appendChild(inp);
+    noteGrid.appendChild(cell);
+  });
+}
+buildNoteGrid();
+
+const selScale = document.getElementById('sel-scale');
+const selRoot  = document.getElementById('sel-root');
+
+function regenFromScale() {
+  notes = genNotes(parseInt(selRoot.value), selScale.value);
+  buildNoteGrid();
+}
+
+document.getElementById('btn-edit').addEventListener('click', () =>
+  document.getElementById('note-editor').classList.toggle('open'));
+document.getElementById('btn-regen').addEventListener('click', regenFromScale);
+selScale.addEventListener('change', regenFromScale);
+selRoot.addEventListener('change', regenFromScale);
+
+document.getElementById('chk-mirror').addEventListener('change', e => {
+  mirrored = e.target.checked;
+});
+
+// ── SENSIBILITÉ (°) ────────────────────────────────────────────────────────────
+const numDegX = document.getElementById('num-degx');
+const numDegY = document.getElementById('num-degy');
+function clampDeg(v) {
+  v = parseFloat(v);
+  if (!isFinite(v)) v = 3;
+  return Math.max(0.5, Math.min(30, v));
+}
+numDegX.addEventListener('change', () => { degX = clampDeg(numDegX.value); numDegX.value = degX; });
+numDegY.addEventListener('change', () => { degY = clampDeg(numDegY.value); numDegY.value = degY; });
+
+// ── CAMERA SELECTION ──────────────────────────────────────────────────────────
+const selCam = document.getElementById('sel-cam');
+let currentStream = null;
+let animFrame = null;
+
+async function enumerateCameras() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    const prev = selCam.value;
+    selCam.innerHTML = '<option value="">Auto</option>';
+    cams.forEach((cam, i) => {
+      const o = document.createElement('option');
+      o.value = cam.deviceId;
+      o.textContent = cam.label || `Caméra ${i + 1}`;
+      if (cam.deviceId === prev) o.selected = true;
+      selCam.appendChild(o);
+    });
+  } catch (_) {}
+}
+enumerateCameras();
+
+async function startCamera() {
+  if (currentStream) {
+    currentStream.getTracks().forEach(t => t.stop());
+    currentStream = null;
+  }
+  const constraints = { video: {
+    width: { ideal: 640 }, height: { ideal: 480 },
+    ...(selCam.value ? { deviceId: { exact: selCam.value } } : {})
+  }};
+  currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+  video.srcObject = currentStream;
+  await video.play();
+  await enumerateCameras(); // relabels after permission granted
+}
+
+function frameLoop() {
+  if (!running) return;
+  if (video.readyState >= 2 && video.currentTime !== lastT) {
+    lastT = video.currentTime;
+    drawFrame(hl.detectForVideo(video, performance.now()));
+  }
+  animFrame = requestAnimationFrame(frameLoop);
+}
+
+selCam.addEventListener('change', async () => {
+  if (running) {
+    cancelAnimationFrame(animFrame);
+    await startCamera();
+    frameLoop();
+  }
+});
+
+// ── AUDIO ────────────────────────────────────────────────────────────────────
+let audioCtx, osc, vibratoOsc, filter, envGain, masterGain;
+let audioReady = false;
+
+function makeReverb(ctx) {
+  const conv = ctx.createConvolver();
+  const sr = ctx.sampleRate, len = sr * 2;
+  const buf = ctx.createBuffer(2, len, sr);
+  for (let c = 0; c < 2; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < len; i++)
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+  }
+  conv.buffer = buf;
+  return conv;
+}
+
+async function initAudio() {
+  if (audioReady) return;
+  audioReady = true;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await audioCtx.resume();
+
+  osc = audioCtx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.value = 261.63;
+
+  vibratoOsc = audioCtx.createOscillator();
+  vibratoOsc.frequency.value = 5.2;
+  const vibratoGain = audioCtx.createGain();
+  vibratoGain.gain.value = 5;
+  vibratoOsc.connect(vibratoGain);
+  vibratoGain.connect(osc.frequency);
+  vibratoOsc.start();
+
+  filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 900;
+  filter.Q.value = 2.5;
+
+  envGain = audioCtx.createGain();
+  envGain.gain.value = 0;
+
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = parseFloat(document.getElementById('rng-vol').value);
+
+  const reverb    = makeReverb(audioCtx);
+  const reverbGain = audioCtx.createGain();
+  reverbGain.gain.value = 0.28;
+
+  osc.connect(filter);
+  filter.connect(envGain);
+  envGain.connect(masterGain);
+  envGain.connect(reverb);
+  reverb.connect(reverbGain);
+  reverbGain.connect(masterGain);
+  masterGain.connect(audioCtx.destination);
+  osc.start();
+}
+
+document.getElementById('rng-vol').addEventListener('input', e => {
+  if (masterGain)
+    masterGain.gain.setTargetAtTime(+e.target.value, audioCtx.currentTime, 0.05);
+});
+
+function playNote(idx, vol) {
+  if (!audioCtx || !running) return;
+  if (audioCtx.state === 'suspended' || audioCtx.state === 'interrupted') audioCtx.resume();
+  if (idx >= 0 && vol > 0.02) {
+    osc.frequency.setTargetAtTime(midiToFreq(notes[idx]), audioCtx.currentTime, 0.03);
+    filter.frequency.setTargetAtTime(500 + vol * 2000, audioCtx.currentTime, 0.03);
+    envGain.gain.setTargetAtTime(vol * 0.7, audioCtx.currentTime, 0.012);
+    activeIdx = idx;
+    activeVol = vol;
+  } else {
+    envGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.07);
+    activeIdx = -1;
+    activeVol = 0;
+  }
+}
+
+// ── MEDIAPIPE FACE ─────────────────────────────────────────────────────────────
+const video   = document.getElementById('videoel');
+const overlay = document.getElementById('overlay');
+const ctx2d   = overlay.getContext('2d');
+
+const vision = await import(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs"
+);
+const { FaceLandmarker, FilesetResolver } = vision;
+
+const fs = await FilesetResolver.forVisionTasks(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
+);
+const hl = await FaceLandmarker.createFromOptions(fs, {
+  baseOptions: {
+    modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+    delegate: 'GPU'
+  },
+  runningMode: 'VIDEO',
+  numFaces: 1
+});
+
+document.getElementById('status').textContent =
+  'Modèle prêt — cliquer START, puis autoriser la caméra';
+
+// ── REGARD ──────────────────────────────────────────────────────────────────
+// Points iris (478 landmarks, raffinement iris inclus dans face_landmarker.task)
+const IRIS_L = [468, 469, 470, 471, 472];   // iris gauche
+const IRIS_R = [473, 474, 475, 476, 477];   // iris droite
+// Repères de chaque œil : coins (externe/interne) + paupières (haute/basse)
+const EYE_L = { out: 33,  in: 133, top: 159, bot: 145 };
+const EYE_R = { out: 263, in: 362, top: 386, bot: 374 };
+
+// Direction du regard pour un œil : position du centroïde de l'iris dans le cadre de l'œil.
+// h,v normalisés par la largeur de l'œil (stable, contrairement à la hauteur qui s'effondre au clignement).
+function eyeGaze(lm, iris, E) {
+  let ix = 0, iy = 0;
+  for (const j of iris) { ix += lm[j].x; iy += lm[j].y; }
+  ix /= iris.length; iy /= iris.length;            // centroïde de l'iris (précision)
+  const o = lm[E.out], n = lm[E.in], t = lm[E.top], b = lm[E.bot];
+  const midX = (o.x + n.x) / 2, midY = (t.y + b.y) / 2;
+  const w = Math.hypot(o.x - n.x, o.y - n.y) || 1e-6;
+  return { h: (ix - midX) / w, v: (iy - midY) / w, open: Math.abs(b.y - t.y) / w };
+}
+
+// ── DRAW ─────────────────────────────────────────────────────────────────────
+function drawFrame(res) {
+  const W = overlay.width, H = overlay.height;
+  const N = notes.length;
+  const k = Math.min(W, H) / 480;   // facteur d'échelle (tailles proportionnelles au canvas)
+
+  // Anneau de tuiles sur le pourtour + rond muet central
+  const cxC = W / 2, cyC = H / 2;
+  const sw      = (Math.PI * 2) / N;       // largeur angulaire d'une tuile
+  const rSilent = Math.min(W, H) * 0.28;   // rayon du rond muet (base large des tuiles)
+  // rayon (px) pour atteindre une fraction f du bord le long de l'angle a (coins inclus)
+  const radAt   = (f, a) => {
+    const denom = Math.max(Math.abs(Math.sin(a)) / cxC, Math.abs(Math.cos(a)) / cyC);
+    return f / (denom || 1e-6);
+  };
+
+  ctx2d.clearRect(0, 0, W, H);
+
+  // ── Visage → contrôle (direction = note, éloignement du centre = volume) ──
+  let cursor = null;
+
+  if (res.faceLandmarks && res.faceLandmarks.length) {
+    const lm = res.faceLandmarks[0];
+
+    // Regard = moyenne des deux yeux ; lissage + maintien pendant les clignements.
+    const gL = eyeGaze(lm, IRIS_L, EYE_L);
+    const gR = eyeGaze(lm, IRIS_R, EYE_R);
+    if ((gL.open + gR.open) / 2 > 0.12) {
+      const hRaw = (gL.h + gR.h) / 2, vRaw = (gL.v + gR.v) / 2;
+      lastGaze.h += (hRaw - lastGaze.h) * 0.35;   // lissage exponentiel
+      lastGaze.v += (vRaw - lastGaze.v) * 0.35;
+    }
+
+    // Point ancré au CENTRE ; le regard l'en éloigne (degX/degY = gains).
+    const px = Math.max(0, Math.min(1, 0.5 + (mirrored ? -1 : 1) * lastGaze.h * degX)) * W;
+    const py = Math.max(0, Math.min(1, 0.5 + lastGaze.v * degY)) * H;
+
+    const dx = px - cxC, dy = py - cyC;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist <= rSilent) {
+      playNote(-1, 0);                      // rond central = silence
+      document.getElementById('note-big').textContent = '—';
+      cursor = { px, py, idx: -1, dist };
+    } else {
+      let a = Math.atan2(dx, -dy);          // 0 = haut, sens horaire
+      if (a < 0) a += Math.PI * 2;
+      const idx  = Math.round(a / sw) % N;  // note 0 (fond.) en haut
+      const edge = radAt(1, a);             // distance au bord dans cette direction
+      const vol  = Math.max(0, Math.min(1, (dist - rSilent) / (edge - rSilent)));
+      playNote(idx, vol);
+      document.getElementById('note-big').textContent = midiToName(notes[idx]);
+      cursor = { px, py, idx, dist };
+    }
+  } else if (running) {
+    playNote(-1, 0);
+    document.getElementById('note-big').textContent = '—';
+  }
+
+  // ── Tuiles : base LARGE vers le centre, pointe ÉTROITE vers le bord ──
+  for (let i = 0; i < N; i++) {
+    const aC = i * sw;
+    const b0 = aC - sw / 2, b1 = aC + sw / 2;
+    const edge = radAt(1, aC);                                  // bord de l'écran dans cette direction
+    const p1x = cxC + rSilent * Math.sin(b0), p1y = cyC - rSilent * Math.cos(b0);
+    const p2x = cxC + rSilent * Math.sin(b1), p2y = cyC - rSilent * Math.cos(b1);
+    const p3x = cxC + edge * Math.sin(aC),    p3y = cyC - edge * Math.cos(aC); // pointe au bord
+    const active = cursor && cursor.idx === i;
+
+    ctx2d.save();
+    ctx2d.beginPath();
+    ctx2d.moveTo(p1x, p1y);
+    ctx2d.lineTo(p3x, p3y);
+    ctx2d.lineTo(p2x, p2y);
+    ctx2d.closePath();
+    ctx2d.clip();
+
+    // Couleur du degré (quelle que soit l'octave)
+    ctx2d.fillStyle = colorOf(notes[i]);
+    ctx2d.fillRect(0, 0, W, H);
+
+    // Indicateur de volume vert (radial) par-dessus la couleur, sur la tuile active
+    if (active) {
+      ctx2d.beginPath();
+      ctx2d.arc(cxC, cyC, cursor.dist, 0, Math.PI * 2);
+      ctx2d.fillStyle = 'rgba(0,255,130,0.55)';
+      ctx2d.fill();
+    }
+    ctx2d.restore();
+
+    // Contour de la tuile
+    ctx2d.beginPath();
+    ctx2d.moveTo(p1x, p1y);
+    ctx2d.lineTo(p3x, p3y);
+    ctx2d.lineTo(p2x, p2y);
+    ctx2d.closePath();
+    ctx2d.strokeStyle = active ? 'rgba(0,255,130,0.9)' : 'rgba(255,255,255,0.22)';
+    ctx2d.lineWidth = active ? 2.5 * k : Math.max(1, k);
+    ctx2d.stroke();
+  }
+
+  // ── Cadre extérieur ──
+  ctx2d.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx2d.lineWidth = Math.max(2, 2 * k);
+  ctx2d.strokeRect(1, 1, W - 2, H - 2);
+
+  // ── Rond muet central ──
+  ctx2d.beginPath();
+  ctx2d.arc(cxC, cyC, rSilent, 0, Math.PI * 2);
+  ctx2d.fillStyle = '#0a0a10';
+  ctx2d.fill();
+  ctx2d.setLineDash([6 * k, 5 * k]);
+  ctx2d.strokeStyle = 'rgba(190,190,210,0.8)';
+  ctx2d.lineWidth = Math.max(1.5, 1.5 * k);
+  ctx2d.stroke();
+  ctx2d.setLineDash([]);
+
+  // ── Étiquettes de notes ──
+  ctx2d.textAlign = 'center';
+  ctx2d.textBaseline = 'middle';
+  for (let i = 0; i < N; i++) {
+    const aC = i * sw;
+    const r = rSilent + 0.30 * (radAt(1, aC) - rSilent); // dans la base large, près du centre
+    const lx = cxC + r * Math.sin(aC);
+    const ly = cyC - r * Math.cos(aC);
+    const name = midiToName(notes[i]);
+    const fz = Math.round(12 * k);
+    ctx2d.font = `bold ${fz}px monospace`;
+    ctx2d.lineJoin = 'round';
+    ctx2d.lineWidth = Math.max(2, Math.round(3.5 * k));
+    ctx2d.strokeStyle = 'rgba(0,0,0,0.9)';
+    ctx2d.strokeText(name, lx, ly);
+    ctx2d.fillStyle = '#ffffff';
+    ctx2d.fillText(name, lx, ly);
+  }
+
+  // ── Curseur (point piloté par la tête) ──
+  if (cursor) {
+    ctx2d.beginPath();
+    ctx2d.arc(cursor.px, cursor.py, Math.round(10 * k), 0, Math.PI * 2);
+    ctx2d.fillStyle = cursor.idx < 0 ? 'rgba(150,150,160,0.9)' : 'rgba(0,255,130,0.95)';
+    ctx2d.fill();
+    ctx2d.lineWidth = Math.max(1.5, 2 * k);
+    ctx2d.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx2d.stroke();
+  }
+
+  ctx2d.textBaseline = 'alphabetic';
+}
+
+// ── START / STOP ──────────────────────────────────────────────────────────────
+const btnStart = document.getElementById('btn-start');
+let lastT = -1;
+
+btnStart.addEventListener('click', async () => {
+  if (!running) {
+    await initAudio();
+    await startCamera();
+    running = true;
+    frameLoop();
+    btnStart.textContent = '⏹ STOP';
+    btnStart.classList.add('on');
+    document.getElementById('status').textContent =
+      'Regarde autour de l’écran pour changer de note — loin du centre = fort, milieu = silence';
+  } else {
+    playNote(-1, 0);          // couper le son AVANT running=false (sinon playNote court-circuite)
+    running = false;
+    cancelAnimationFrame(animFrame);
+    animFrame = null;
+    if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
+    video.srcObject = null;
+    btnStart.textContent = '▶ START';
+    btnStart.classList.remove('on');
+    ctx2d.clearRect(0, 0, overlay.width, overlay.height);
+    document.getElementById('note-big').textContent = '—';
+    document.getElementById('status').textContent = 'Arrêté';
+  }
+});
+
+// ── REDIMENSIONNEMENT / PLEIN ÉCRAN ────────────────────────────────────────────
+const videoWrap = document.getElementById('video-wrap');
+
+// La résolution interne du canvas suit sa taille affichée (rendu net, géométrie adaptée)
+function resizeCanvas() {
+  const r = overlay.getBoundingClientRect();
+  const w = Math.max(1, Math.round(r.width));
+  const h = Math.max(1, Math.round(r.height));
+  if (overlay.width !== w || overlay.height !== h) { overlay.width = w; overlay.height = h; }
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+const btnFs = document.getElementById('btn-fs');
+btnFs.addEventListener('click', async () => {
+  try {
+    if (!document.fullscreenElement) {
+      await (videoWrap.requestFullscreen?.() ?? videoWrap.webkitRequestFullscreen?.());
+    } else {
+      await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.());
+    }
+  } catch (_) {}
+});
+document.addEventListener('fullscreenchange', () => {
+  const fs = !!document.fullscreenElement;
+  btnFs.classList.toggle('on', fs);
+  btnFs.textContent = fs ? '⛶ Quitter' : '⛶ Plein écran';
+  requestAnimationFrame(resizeCanvas); // laisser le layout s'appliquer avant de mesurer
+});
+
+})();
+</script>
+</body>
+</html>
