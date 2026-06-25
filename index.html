@@ -532,12 +532,15 @@ for (const y of [0.08, 0.37, 0.63, 0.92]) for (const x of [0.06, 0.37, 0.63, 0.9
 const CAL_SETTLE = 700, CAL_CAPTURE = 1000;  // ms : fixation puis capture (par point)
 const HEAD_MS = 6000, HEAD_SETTLE = 1000;    // ms : phase "bouge la tête" (compensation)
 
-// Grille 5×5 pour la collecte de données d'entraînement
-const COLL_TARGETS = [];
-for (const y of [0.08, 0.25, 0.50, 0.75, 0.92])
-  for (const x of [0.06, 0.25, 0.50, 0.75, 0.94])
-    COLL_TARGETS.push({ x, y });
-const COLL_SETTLE = 500, COLL_CAPTURE = 1500; // ms par point (2 tours → ~2 min, ~2500 éch.)
+// 150 points aléatoires couvrant tout l'écran (bien meilleur que grille fixe)
+const COLL_N = 150;
+const COLL_SETTLE = 400, COLL_CAPTURE = 900;  // ms par point (~3 min total, ~3000 éch.)
+function genCollTargets() {
+  const pts = [];
+  for (let i = 0; i < COLL_N; i++)
+    pts.push({ x: 0.05 + Math.random() * 0.90, y: 0.05 + Math.random() * 0.90 });
+  return pts;
+}
 
 // Résolution d'un système linéaire n×n (Gauss-Jordan, pivot partiel)
 function solveLinear(A, b) {
@@ -718,7 +721,7 @@ function collectionFrame() {
   const cs = collState, now = performance.now();
   const W = overlay.width, H = overlay.height, S = Math.min(W, H);
   const el = now - cs.t0;
-  const t  = COLL_TARGETS[cs.i];
+  const t  = cs.targets[cs.i];
 
   if (cs.phase === 'settle') {
     if (el >= COLL_SETTLE) { cs.phase = 'capture'; cs.t0 = now; }
@@ -726,8 +729,7 @@ function collectionFrame() {
     if (lastFeats) cs.data.push([...lastFeats, t.x, t.y]);
     if (el >= COLL_CAPTURE) {
       cs.i++;
-      if (cs.i >= COLL_TARGETS.length) { cs.i = 0; cs.round++; }
-      if (cs.round >= cs.rounds) {
+      if (cs.i >= cs.targets.length) {
         downloadData(cs.data);
         collState = null;
         document.getElementById('status').textContent =
@@ -750,11 +752,12 @@ function collectionFrame() {
   ctx2d.moveTo(tx, ty - rr * .5); ctx2d.lineTo(tx, ty + rr * .5); ctx2d.stroke();
   ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
   const ya = t.y < 0.35 ? H * .81 : H * .14, yb = t.y < 0.35 ? H * .87 : H * .20;
+  const minLeft = Math.round((cs.targets.length - cs.i) * (COLL_SETTLE + COLL_CAPTURE) / 60000);
   ctx2d.font = `bold ${Math.round(S * .038)}px monospace`; ctx2d.fillStyle = '#fff';
   ctx2d.fillText(capturing ? 'Fixe le point (tête immobile)' : 'Prépare-toi…', W / 2, ya);
   ctx2d.font = `${Math.round(S * .026)}px monospace`; ctx2d.fillStyle = '#9aab9f';
-  ctx2d.fillText(`Pt ${cs.i + 1}/${COLL_TARGETS.length} · Tour ${cs.round + 1}/${cs.rounds} · ${cs.data.length} éch.`, W / 2, yb);
-  const prog = (cs.round * COLL_TARGETS.length + cs.i) / (cs.rounds * COLL_TARGETS.length);
+  ctx2d.fillText(`Pt ${cs.i + 1}/${cs.targets.length} · ${cs.data.length} éch. · ~${minLeft} min`, W / 2, yb);
+  const prog = cs.i / cs.targets.length;
   const bw = W * .5, bx = W * .25, by = H * .91, bh = S * .018;
   ctx2d.strokeStyle = '#334'; ctx2d.lineWidth = 1; ctx2d.strokeRect(bx, by, bw, bh);
   ctx2d.fillStyle = '#00e87a'; ctx2d.fillRect(bx, by, bw * prog, bh);
@@ -1023,7 +1026,7 @@ document.getElementById('btn-collect').addEventListener('click', () => {
     document.getElementById('status').textContent = 'Lance ▶ START d\'abord';
     return;
   }
-  collState = { round: 0, rounds: 2, i: 0, phase: 'settle', t0: performance.now(), data: [] };
+  collState = { targets: genCollTargets(), i: 0, phase: 'settle', t0: performance.now(), data: [] };
   document.getElementById('status').textContent = 'Collecte — fixe chaque point, tête immobile';
 });
 
