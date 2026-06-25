@@ -534,7 +534,7 @@ const HEAD_MS = 6000, HEAD_SETTLE = 1000;    // ms : phase "bouge la tête" (com
 
 // 150 points aléatoires couvrant tout l'écran (bien meilleur que grille fixe)
 const COLL_N = 150;
-const COLL_SETTLE = 400, COLL_CAPTURE = 900;  // ms par point (~3 min total, ~3000 éch.)
+const COLL_SETTLE = 600, COLL_CAPTURE = 800;  // ms par point (600ms = œil stabilisé, ~3.5 min)
 function genCollTargets() {
   const pts = [];
   for (let i = 0; i < COLL_N; i++)
@@ -706,7 +706,7 @@ function calibrationFrame(haveFace) {
 // ── COLLECTE DE DONNÉES ──────────────────────────────────────────────────────
 function downloadData(data) {
   const json = JSON.stringify({
-    feature_names: ['lh','lv','rh','rv','lopen','ropen','yaw','pitch','roll','cx','cy'],
+    feature_names: ['iris_lx','iris_ly','iris_rx','iris_ry','lopen','ropen','yaw','pitch','roll','cx','cy'],
     output_names:  ['screen_x','screen_y'],
     samples: data
   });
@@ -803,9 +803,16 @@ function drawFrame(res) {
     lastHead.roll  += (hr  - lastHead.roll)  * 0.3;
     lastHead.cx    += (fcx - lastHead.cx)    * 0.3;
     lastHead.cy    += (fcy - lastHead.cy)    * 0.3;
-    // Features 11D — calculées une fois, utilisées par NN et par la collecte
-    if (eyesOpen) lastFeats = [gL.h, gL.v, gR.h, gR.v, gL.open, gR.open,
-                                lastHead.yaw, lastHead.pitch, lastHead.roll, fcx, fcy];
+    // Features 11D — position ABSOLUE de l'iris (moins de bruit que relative à l'œil)
+    if (eyesOpen) {
+      let ilx = 0, ily = 0, irx = 0, iry = 0;
+      for (const j of IRIS_L) { ilx += lm[j].x; ily += lm[j].y; }
+      for (const j of IRIS_R) { irx += lm[j].x; iry += lm[j].y; }
+      ilx /= IRIS_L.length; ily /= IRIS_L.length;
+      irx /= IRIS_R.length; iry /= IRIS_R.length;
+      lastFeats = [ilx, ily, irx, iry, gL.open, gR.open,
+                   lastHead.yaw, lastHead.pitch, lastHead.roll, fcx, fcy];
+    }
     // NN mode : features → modèle → résultat
     if (nnMode && gazeModel && lastFeats) {
       const inp = tf.tensor2d([lastFeats], [1, 11]);
