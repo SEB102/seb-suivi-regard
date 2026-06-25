@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SUIVI REGARD</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
   <style>
     :root {
       --bg: #0a0a10; --panel: #12121c; --accent: #00e87a;
@@ -146,6 +147,7 @@
       <span>Miroir</span>
     </label>
     <button id="btn-cal" title="Calibrer le regard : fixe les points affichés">◎ Calibrer</button>
+    <button id="btn-nn" title="Activer le réseau de neurones à la place du suivi d'iris (nécessite model/)">🧠 NN</button>
     <button id="btn-fs" title="Plein écran (Échap pour sortir)">⛶ Plein écran</button>
     <div id="note-big">—</div>
     <button id="btn-edit" style="margin-left:auto">NOTES ▾</button>
@@ -236,10 +238,13 @@ let degY      = 5;    // gain vertical du regard
 let activeIdx = -1;
 let activeVol = 0;
 let lastGaze  = { h: 0, v: 0 };  // regard lissé (et conservé pendant les clignements)
-let lastHead  = { yaw: 0, pitch: 0, cx: 0.5, cy: 0.5 };  // pose de tête lissée
+let lastHead  = { yaw: 0, pitch: 0, roll: 0, cx: 0.5, cy: 0.5 };  // pose de tête lissée
 let calibState = null;           // séquence de calibration en cours (null = pas de calibration)
 let calib = null;                // mapping calibré { cX, cY, ref, hcX, hcY }
 try { const c = JSON.parse(localStorage.getItem('gazePoly2') || 'null'); if (c && Array.isArray(c.cX) && Array.isArray(c.cY)) calib = c; } catch (_) {}
+
+let gazeModel = null;
+let nnMode = false;
 
 // ── NOTE EDITOR ──────────────────────────────────────────────────────────────
 const noteGrid   = document.getElementById('note-grid');
@@ -457,8 +462,8 @@ const hl = await FaceLandmarker.createFromOptions(fs, {
   outputFacialTransformationMatrixes: true   // pose de tête (compensation des mouvements)
 });
 
-document.getElementById('status').textContent =
-  'Modèle prêt — cliquer START, puis autoriser la caméra';
+document.getElementById('status').textContent = 'Modèle prêt — chargement modèle NN…';
+loadGazeModel();
 
 // ── REGARD ──────────────────────────────────────────────────────────────────
 // Points iris (478 landmarks, raffinement iris inclus dans face_landmarker.task)
@@ -486,7 +491,28 @@ function eyeGaze(lm, iris, E) {
 function headPose(d) {
   const r00 = d[0], r10 = d[1], r20 = d[2], r21 = d[6], r22 = d[10];
   const sy = Math.hypot(r00, r10);
-  return { yaw: Math.atan2(-r20, sy) * 180 / Math.PI, pitch: Math.atan2(r21, r22) * 180 / Math.PI };
+  return {
+    yaw:   Math.atan2(-r20, sy) * 180 / Math.PI,
+    pitch: Math.atan2(r21, r22) * 180 / Math.PI,
+    roll:  Math.atan2(r10, r00) * 180 / Math.PI
+  };
+}
+
+// Chargement asynchrone du modèle TF.js (11 features → [pitch_deg, yaw_deg])
+async function loadGazeModel() {
+  if (typeof tf === 'undefined') return;
+  try {
+    gazeModel = await tf.loadLayersModel('model/model.json');
+    const dummy = tf.zeros([1, 11]);
+    gazeModel.predict(dummy).dispose();
+    dummy.dispose();
+    document.getElementById('status').textContent =
+      'Modèle NN prêt — START, puis activer 🧠 NN et Calibrer';
+  } catch (e) {
+    console.warn('Modèle NN non chargé (copier model/ dans ce répertoire) :', e.message);
+    document.getElementById('status').textContent =
+      'Modèle prêt — START pour commencer (🧠 NN indisponible : model/ manquant)';
+  }
 }
 
 // ── CALIBRATION DU REGARD ────────────────────────────────────────────────────
@@ -681,20 +707,33 @@ function drawFrame(res) {
     const lm = res.faceLandmarks[0];
     const gL = eyeGaze(lm, IRIS_L, EYE_L);
     const gR = eyeGaze(lm, IRIS_R, EYE_R);
-    if ((gL.open + gR.open) / 2 > 0.12) {          // yeux ouverts → on met à jour
+    const eyesOpen = (gL.open + gR.open) / 2 > 0.12;
+    if (!nnMode && eyesOpen) {                      // iris mode : position dans l'œil
       const hRaw = (gL.h + gR.h) / 2, vRaw = (gL.v + gR.v) / 2;
-      lastGaze.h += (hRaw - lastGaze.h) * 0.25;    // inertie modérée (suit de façon fiable)
+      lastGaze.h += (hRaw - lastGaze.h) * 0.25;
       lastGaze.v += (vRaw - lastGaze.v) * 0.25;
     }
     // pose de tête : rotation (matrice) + translation (centroïde du visage)
-    let hy = lastHead.yaw, hp = lastHead.pitch;
+    let hy = lastHead.yaw, hp = lastHead.pitch, hr = lastHead.roll;
     const mats = res.facialTransformationMatrixes;
-    if (mats && mats.length) { const e = headPose(mats[0].data); hy = e.yaw; hp = e.pitch; }
+    if (mats && mats.length) { const e = headPose(mats[0].data); hy = e.yaw; hp = e.pitch; hr = e.roll; }
     let fcx = 0, fcy = 0; for (const p of lm) { fcx += p.x; fcy += p.y; } fcx /= lm.length; fcy /= lm.length;
     lastHead.yaw   += (hy  - lastHead.yaw)   * 0.3;
     lastHead.pitch += (hp  - lastHead.pitch) * 0.3;
+    lastHead.roll  += (hr  - lastHead.roll)  * 0.3;
     lastHead.cx    += (fcx - lastHead.cx)    * 0.3;
     lastHead.cy    += (fcy - lastHead.cy)    * 0.3;
+    // NN mode : vecteur 11 features → modèle → (pitch_deg, yaw_deg)
+    if (nnMode && gazeModel && eyesOpen) {
+      const feats = [gL.h, gL.v, gR.h, gR.v, gL.open, gR.open,
+                     lastHead.yaw, lastHead.pitch, lastHead.roll, fcx, fcy];
+      const inp = tf.tensor2d([feats], [1, 11]);
+      const pred = gazeModel.predict(inp);
+      const vals = pred.dataSync();
+      inp.dispose(); pred.dispose();
+      lastGaze.h += (vals[1] - lastGaze.h) * 0.25;  // yaw_deg
+      lastGaze.v += (vals[0] - lastGaze.v) * 0.25;  // pitch_deg
+    }
     haveFace = true;
   }
 
@@ -708,7 +747,10 @@ function drawFrame(res) {
     if (calib) {                          // point de regard : polynômes calibrés (regard → écran)
       fx = evalPoly(calib.cX, lastGaze.h, lastGaze.v);
       fy = evalPoly(calib.cY, lastGaze.h, lastGaze.v);
-    } else {                              // sans calibration : gains manuels (Sens. H / V)
+    } else if (nnMode) {                  // NN sans calibration : ±30° yaw / ±20° pitch → écran
+      fx = 0.5 + (mirrored ? -1 : 1) * lastGaze.h / 30;
+      fy = 0.5 + lastGaze.v / 20;
+    } else {                              // iris sans calibration : gains manuels (Sens. H / V)
       fx = 0.5 + (mirrored ? -1 : 1) * lastGaze.h * degX;
       fy = 0.5 + lastGaze.v * degY;
     }
@@ -872,6 +914,20 @@ resizeCanvas();
 window.addEventListener('resize', resizeCanvas);
 
 document.getElementById('btn-cal').addEventListener('click', startCalibration);
+
+document.getElementById('btn-nn').addEventListener('click', () => {
+  if (!gazeModel) {
+    document.getElementById('status').textContent = 'Modèle NN non chargé — vérifier que model/ est dans le répertoire';
+    return;
+  }
+  nnMode = !nnMode;
+  document.getElementById('btn-nn').classList.toggle('on', nnMode);
+  calib = null;
+  try { localStorage.removeItem('gazePoly2'); } catch (_) {}
+  document.getElementById('status').textContent = nnMode
+    ? 'Mode 🧠 NN actif — cliquer ◎ Calibrer pour de bons résultats'
+    : 'Mode iris — cliquer ◎ Calibrer si besoin';
+});
 
 const btnFs = document.getElementById('btn-fs');
 btnFs.addEventListener('click', async () => {

@@ -1,0 +1,21 @@
+{
+  "feature_names": [
+    "lh",
+    "lv",
+    "rh",
+    "rv",
+    "lopen",
+    "ropen",
+    "yaw",
+    "pitch",
+    "roll",
+    "cx",
+    "cy"
+  ],
+  "feature_dim": 11,
+  "output": [
+    "pitch_deg",
+    "yaw_deg"
+  ],
+  "val_angular_error_deg": 1.8821461200714111
+}
