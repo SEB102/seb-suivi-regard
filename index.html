@@ -105,10 +105,10 @@
       </select>
     </label>
     <label><span>Gain H</span>
-      <input id="num-gainh" type="number" min="0.5" max="20" step="0.5" value="2">
+      <input id="num-gainh" type="number" min="1" max="50" step="1" value="10">
     </label>
     <label><span>Gain V</span>
-      <input id="num-gainv" type="number" min="0.5" max="20" step="0.5" value="2.5">
+      <input id="num-gainv" type="number" min="1" max="50" step="1" value="10">
     </label>
     <label><span>Vol</span>
       <input id="rng-vol" type="range" min="0" max="1" step="0.01" value="0.7">
@@ -189,8 +189,8 @@ let activeVol = 0;
 let lastGaze  = { h: 0, v: 0 };  // blend shape gaze lissé
 let centerH   = 0;                // zéro de référence (bouton Centrer)
 let centerV   = 0;
-let gainH     = 2;
-let gainV     = 2.5;
+let gainH     = 10;
+let gainV     = 10;
 let lastT     = -1;
 let animFrame = null;
 let currentStream = null;
@@ -303,39 +303,39 @@ document.getElementById('status').textContent =
   'Prêt — ▶ START puis ◎ Centrer en regardant droit devant';
 
 // ── LANDMARKS IRIS → REGARD ───────────────────────────────────────────────────
-// Iris lm[468] (gauche) et lm[473] (droite), normalisés par rapport aux coins
-// des yeux → signal continu sur toute la plage, compensé pose de tête.
-// Indices : coins œil gauche 33 (tempe) / 133 (nez) ; œil droit 362 (nez) / 263 (tempe)
-// Paupières : gauche 159 (haut) / 145 (bas) ; droite 386 (haut) / 374 (bas)
+// Iris lm[468] (gauche) et lm[473] (droite).
+// Horizontal : normalisé par rapport aux coins horizontaux de l'œil.
+// Vertical   : iris Y par rapport à la HAUTEUR MOYENNE des coins (≠ paupières).
+//   Les paupières montent avec l'iris → signal s'annule ou s'inverse.
+//   Les coins de l'œil (33/133, 362/263) restent stables sous rotation verticale.
 function gazeFromLandmarks(lm) {
   if (!lm || lm.length < 478) return null;
 
   const li = lm[468], ri = lm[473]; // centres iris
 
-  // Largeur de chaque œil (coins extrêmes en x, indépendant de l'orientation caméra)
+  // Coins des yeux — référence stable horizontalement et verticalement
   const lxL = Math.min(lm[33].x, lm[133].x), lxR = Math.max(lm[33].x, lm[133].x);
   const rxL = Math.min(lm[362].x, lm[263].x), rxR = Math.max(lm[362].x, lm[263].x);
   const lW = lxR - lxL, rW = rxR - rxL;
   if (lW < 0.005 || rW < 0.005) return null;
 
-  // Hauteur de chaque œil (paupières)
+  // EAR via paupières — UNIQUEMENT pour détecter le clignement
   const lyT = Math.min(lm[159].y, lm[145].y), lyB = Math.max(lm[159].y, lm[145].y);
   const ryT = Math.min(lm[386].y, lm[374].y), ryB = Math.max(lm[386].y, lm[374].y);
-  const lEH = lyB - lyT, rEH = ryB - ryT;
+  if ((lyB - lyT) / lW < 0.08 && (ryB - ryT) / rW < 0.08) return null;
 
-  // EAR (Eye Aspect Ratio) — clignement détecté quand les deux yeux sont fermés
-  if (lEH / lW < 0.08 && rEH / rW < 0.08) return null;
-
-  // Position iris normalisée dans l'œil : 0 = bord gauche image, 1 = bord droit image
-  // Quand la personne regarde à sa GAUCHE : les deux iris vont vers la droite de l'image
-  // → lH et rH augmentent → h > 0 = regard gauche (repère de la personne)
+  // Horizontal : iris normalisé bord-à-bord ; regard gauche → iris droite image → h > 0
   const lH = (li.x - lxL) / lW;
   const rH = (ri.x - rxL) / rW;
-  const h  = (lH + rH) / 2 - 0.5;  // −0.5 = plein droite, 0 = centre, +0.5 = plein gauche
+  const h  = (lH + rH) / 2 - 0.5;
 
-  const lV = (li.y - lyT) / Math.max(lEH, 0.001);
-  const rV = (ri.y - ryT) / Math.max(rEH, 0.001);
-  const v  = (lV + rV) / 2 - 0.5;  // −0.5 = plein haut, 0 = centre, +0.5 = plein bas
+  // Vertical : iris Y − hauteur moyenne des coins (coins fixes sous rotation oculaire)
+  // v < 0 = regard haut (iris au-dessus des coins), v > 0 = regard bas
+  const lCy = (lm[33].y + lm[133].y) / 2;
+  const rCy = (lm[362].y + lm[263].y) / 2;
+  const lV = (li.y - lCy) / lW;
+  const rV = (ri.y - rCy) / rW;
+  const v  = (lV + rV) / 2;
 
   return { h, v };
 }
