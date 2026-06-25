@@ -105,10 +105,10 @@
       </select>
     </label>
     <label><span>Gain H</span>
-      <input id="num-gainh" type="number" min="0.5" max="20" step="0.5" value="3">
+      <input id="num-gainh" type="number" min="0.5" max="20" step="0.5" value="2">
     </label>
     <label><span>Gain V</span>
-      <input id="num-gainv" type="number" min="0.5" max="20" step="0.5" value="3">
+      <input id="num-gainv" type="number" min="0.5" max="20" step="0.5" value="2.5">
     </label>
     <label><span>Vol</span>
       <input id="rng-vol" type="range" min="0" max="1" step="0.01" value="0.7">
@@ -189,8 +189,8 @@ let activeVol = 0;
 let lastGaze  = { h: 0, v: 0 };  // blend shape gaze lissé
 let centerH   = 0;                // zéro de référence (bouton Centrer)
 let centerV   = 0;
-let gainH     = 3;
-let gainV     = 3;
+let gainH     = 2;
+let gainV     = 2.5;
 let lastT     = -1;
 let animFrame = null;
 let currentStream = null;
@@ -296,23 +296,47 @@ const hl = await FaceLandmarker.createFromOptions(fs, {
   },
   runningMode: 'VIDEO',
   numFaces: 1,
-  outputFaceBlendshapes: true
+  outputFaceBlendshapes: false
 });
 
 document.getElementById('status').textContent =
   'Prêt — ▶ START puis ◎ Centrer en regardant droit devant';
 
-// ── BLEND SHAPES → REGARD ─────────────────────────────────────────────────────
-// Les blend shapes "eyeLookXxx" sont calculés par le réseau de neurones de MediaPipe
-// dans le repère de la tête — indépendants de la pose de tête.
-function gazeFromBlendshapes(categories) {
-  const get = name => (categories.find(c => c.categoryName === name)?.score ?? 0);
-  // Fermeture des yeux → pas de signal valide
-  if ((get('eyeBlinkLeft') + get('eyeBlinkRight')) / 2 > 0.5) return null;
-  const h = ((get('eyeLookOutLeft')  - get('eyeLookInLeft')) +
-             (get('eyeLookInRight')  - get('eyeLookOutRight'))) / 2;
-  const v = ((get('eyeLookDownLeft') - get('eyeLookUpLeft')) +
-             (get('eyeLookDownRight')- get('eyeLookUpRight'))) / 2;
+// ── LANDMARKS IRIS → REGARD ───────────────────────────────────────────────────
+// Iris lm[468] (gauche) et lm[473] (droite), normalisés par rapport aux coins
+// des yeux → signal continu sur toute la plage, compensé pose de tête.
+// Indices : coins œil gauche 33 (tempe) / 133 (nez) ; œil droit 362 (nez) / 263 (tempe)
+// Paupières : gauche 159 (haut) / 145 (bas) ; droite 386 (haut) / 374 (bas)
+function gazeFromLandmarks(lm) {
+  if (!lm || lm.length < 478) return null;
+
+  const li = lm[468], ri = lm[473]; // centres iris
+
+  // Largeur de chaque œil (coins extrêmes en x, indépendant de l'orientation caméra)
+  const lxL = Math.min(lm[33].x, lm[133].x), lxR = Math.max(lm[33].x, lm[133].x);
+  const rxL = Math.min(lm[362].x, lm[263].x), rxR = Math.max(lm[362].x, lm[263].x);
+  const lW = lxR - lxL, rW = rxR - rxL;
+  if (lW < 0.005 || rW < 0.005) return null;
+
+  // Hauteur de chaque œil (paupières)
+  const lyT = Math.min(lm[159].y, lm[145].y), lyB = Math.max(lm[159].y, lm[145].y);
+  const ryT = Math.min(lm[386].y, lm[374].y), ryB = Math.max(lm[386].y, lm[374].y);
+  const lEH = lyB - lyT, rEH = ryB - ryT;
+
+  // EAR (Eye Aspect Ratio) — clignement détecté quand les deux yeux sont fermés
+  if (lEH / lW < 0.08 && rEH / rW < 0.08) return null;
+
+  // Position iris normalisée dans l'œil : 0 = bord gauche image, 1 = bord droit image
+  // Quand la personne regarde à sa GAUCHE : les deux iris vont vers la droite de l'image
+  // → lH et rH augmentent → h > 0 = regard gauche (repère de la personne)
+  const lH = (li.x - lxL) / lW;
+  const rH = (ri.x - rxL) / rW;
+  const h  = (lH + rH) / 2 - 0.5;  // −0.5 = plein droite, 0 = centre, +0.5 = plein gauche
+
+  const lV = (li.y - lyT) / Math.max(lEH, 0.001);
+  const rV = (ri.y - ryT) / Math.max(rEH, 0.001);
+  const v  = (lV + rV) / 2 - 0.5;  // −0.5 = plein haut, 0 = centre, +0.5 = plein bas
+
   return { h, v };
 }
 
@@ -332,15 +356,14 @@ function drawFrame(res) {
 
   let cursor = null, haveFace = false;
 
-  if (res.faceBlendshapes?.length) {
-    const gaze = gazeFromBlendshapes(res.faceBlendshapes[0].categories);
+  if (res.faceLandmarks?.length) {
+    const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
     if (gaze) {
       haveFace = true;
-      lastGaze.h += (gaze.h - lastGaze.h) * 0.25;
-      lastGaze.v += (gaze.v - lastGaze.v) * 0.25;
+      lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
+      lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
 
-      // h : positif = regard à gauche (outLeft > inLeft)
-      // on inverse pour que le curseur suive (regard gauche → curseur gauche)
+      // h > 0 = regard gauche → curseur gauche (fx < 0.5)
       let fx = Math.max(0, Math.min(1, 0.5 - (lastGaze.h - centerH) * gainH));
       let fy = Math.max(0, Math.min(1, 0.5 + (lastGaze.v - centerV) * gainV));
 
