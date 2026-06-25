@@ -136,6 +136,7 @@
       <input id="chk-mirror" type="checkbox" checked>
       <span>Miroir</span>
     </label>
+    <button id="btn-cal" title="Relancer la calibration (9 points)">◎ Calibrer</button>
     <button id="btn-fs" title="Plein écran (Échap pour sortir)">⛶ Plein écran</button>
     <div id="note-big">—</div>
     <button id="btn-edit" style="margin-left:auto">NOTES ▾</button>
@@ -212,6 +213,13 @@ function parseFR(s) {
   return null;
 }
 
+// ── CALIBRATION ───────────────────────────────────────────────────────────────
+const CAL_POINTS = [
+  [0.1, 0.1], [0.5, 0.1], [0.9, 0.1],
+  [0.1, 0.5], [0.5, 0.5], [0.9, 0.5],
+  [0.1, 0.9], [0.5, 0.9], [0.9, 0.9]
+];
+
 // ── STATE ────────────────────────────────────────────────────────────────────
 let notes        = genNotes(60, 'M', SCALES.M.length);
 let running      = false;
@@ -221,6 +229,8 @@ let activeVol    = 0;
 let lastGaze     = { fx: 0.5, fy: 0.5 };  // coordonnées normalisées [0,1] relatives au canvas
 let lastGazeTime = 0;
 let animFrame    = null;
+let calibIdx     = -1;   // -1 = theremine actif ; 0-8 = index du point en cours
+let calibFlash   = 0;    // timestamp du dernier clic validé (pour animation)
 
 // ── ÉDITEUR DE NOTES ─────────────────────────────────────────────────────────
 const noteGrid   = document.getElementById('note-grid');
@@ -351,6 +361,88 @@ function playNote(idx, vol) {
 const overlay = document.getElementById('overlay');
 const ctx2d   = overlay.getContext('2d');
 
+// ── PHASE DE CALIBRATION ──────────────────────────────────────────────────────
+function startCalibration() {
+  webgazer.clearData();   // repart de zéro à chaque calibration
+  calibIdx   = 0;
+  calibFlash = 0;
+  lastGazeTime = 0;
+  document.getElementById('status').textContent =
+    'Calibration — fixe le point et clique dessus (9 points)';
+}
+
+function drawCalibration() {
+  const W = overlay.width, H = overlay.height, S = Math.min(W, H);
+  ctx2d.fillStyle = '#0a0a10';
+  ctx2d.fillRect(0, 0, W, H);
+
+  const [rx, ry] = CAL_POINTS[calibIdx];
+  const tx = rx * W, ty = ry * H;
+  const t  = performance.now();
+  const pulse = 0.5 + 0.5 * Math.sin(t / 280);
+  const rr  = S * (0.030 + 0.008 * pulse);
+
+  // Flash vert bref après validation
+  const flashAge = t - calibFlash;
+  if (flashAge < 220) {
+    ctx2d.fillStyle = `rgba(0,255,130,${0.28 * (1 - flashAge / 220)})`;
+    ctx2d.fillRect(0, 0, W, H);
+  }
+
+  // Halo
+  ctx2d.beginPath();
+  ctx2d.arc(tx, ty, rr * 2.4, 0, Math.PI * 2);
+  ctx2d.fillStyle = `rgba(0,232,122,${0.12 + 0.08 * pulse})`;
+  ctx2d.fill();
+
+  // Point
+  ctx2d.beginPath();
+  ctx2d.arc(tx, ty, rr, 0, Math.PI * 2);
+  ctx2d.fillStyle = '#00e87a';
+  ctx2d.fill();
+
+  // Croix
+  ctx2d.strokeStyle = '#0a0a10';
+  ctx2d.lineWidth = 2;
+  ctx2d.beginPath();
+  ctx2d.moveTo(tx - rr * 0.5, ty); ctx2d.lineTo(tx + rr * 0.5, ty);
+  ctx2d.moveTo(tx, ty - rr * 0.5); ctx2d.lineTo(tx, ty + rr * 0.5);
+  ctx2d.stroke();
+
+  // Texte instruction
+  const ya = ry < 0.4 ? H * 0.80 : H * 0.12;
+  const yb = ry < 0.4 ? H * 0.87 : H * 0.19;
+  ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
+  ctx2d.font = `bold ${Math.round(S * 0.038)}px monospace`;
+  ctx2d.fillStyle = '#ffffff';
+  ctx2d.fillText('Fixe le point et clique dessus', W / 2, ya);
+  ctx2d.font = `${Math.round(S * 0.026)}px monospace`;
+  ctx2d.fillStyle = '#555';
+  ctx2d.fillText(`${calibIdx + 1} / ${CAL_POINTS.length}`, W / 2, yb);
+  ctx2d.textBaseline = 'alphabetic';
+}
+
+// Clic sur le canvas : valide le point si on clique assez près du dot
+overlay.addEventListener('click', e => {
+  if (calibIdx < 0 || calibIdx >= CAL_POINTS.length) return;
+  const rect = overlay.getBoundingClientRect();
+  const scaleX = overlay.width  / rect.width;
+  const scaleY = overlay.height / rect.height;
+  const mx = (e.clientX - rect.left) * scaleX;
+  const my = (e.clientY - rect.top)  * scaleY;
+  const [rx, ry] = CAL_POINTS[calibIdx];
+  const tx = rx * overlay.width, ty = ry * overlay.height;
+  if (Math.hypot(mx - tx, my - ty) > Math.min(overlay.width, overlay.height) * 0.10) return;
+
+  calibFlash = performance.now();
+  calibIdx++;
+  if (calibIdx >= CAL_POINTS.length) {
+    calibIdx = -1;
+    document.getElementById('status').textContent =
+      'Calibration terminée ✓ — regarde l\'écran pour jouer';
+  }
+});
+
 // ── WEBGAZER ─────────────────────────────────────────────────────────────────
 // Callback appelé par WebGazer à chaque frame (~60 fps)
 // data.x / data.y sont en pixels viewport — on les convertit en [0,1] relatif au canvas
@@ -367,6 +459,8 @@ function gazeListener(data) {
 
 // ── RENDU ────────────────────────────────────────────────────────────────────
 function drawFrame() {
+  if (calibIdx >= 0) { drawCalibration(); return; }
+
   const W = overlay.width, H = overlay.height;
   const N = notes.length;
   const k = Math.min(W, H) / 480;
@@ -509,8 +603,7 @@ btnStart.addEventListener('click', async () => {
         .showVideoPreview(false)
         .showPredictionPoints(false)
         .begin();
-      document.getElementById('status').textContent =
-        'WebGazer actif — regarde l\'écran · clique pour calibrer';
+      startCalibration();
     } catch (e) {
       running = false;
       document.getElementById('status').textContent = 'Erreur caméra : ' + e.message;
@@ -531,6 +624,10 @@ btnStart.addEventListener('click', async () => {
     document.getElementById('note-big').textContent = '—';
     document.getElementById('status').textContent = 'Arrêté';
   }
+});
+
+document.getElementById('btn-cal').addEventListener('click', () => {
+  if (running) startCalibration();
 });
 
 // ── REDIMENSIONNEMENT / PLEIN ÉCRAN ──────────────────────────────────────────
