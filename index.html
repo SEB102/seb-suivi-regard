@@ -133,8 +133,8 @@
       <input id="rng-vol" type="range" min="0" max="1" step="0.01" value="0.7">
     </label>
     <label>
-      <input id="chk-mirror" type="checkbox" checked>
-      <span>Miroir</span>
+      <input id="chk-mirror" type="checkbox">
+      <span>Inverser H</span>
     </label>
     <button id="btn-cal" title="Relancer la calibration (9 points)">◎ Calibrer</button>
     <button id="btn-fs" title="Plein écran (Échap pour sortir)">⛶ Plein écran</button>
@@ -221,16 +221,23 @@ const CAL_POINTS = [
 ];
 
 // ── STATE ────────────────────────────────────────────────────────────────────
+const N_CLICKS   = 3;     // clics requis par point de calibration
+
 let notes        = genNotes(60, 'M', SCALES.M.length);
 let running      = false;
-let mirrored     = true;
+let mirrored     = false;  // WebGazer sort déjà en coordonnées écran correctes
 let activeIdx    = -1;
 let activeVol    = 0;
 let lastGaze     = { fx: 0.5, fy: 0.5 };  // coordonnées normalisées [0,1] relatives au canvas
+let lastRawGaze  = { fx: 0.5, fy: 0.5 };  // sortie brute WebGazer (toujours mise à jour)
 let lastGazeTime = 0;
 let animFrame    = null;
 let calibIdx     = -1;   // -1 = theremine actif ; 0-8 = index du point en cours
+let calibClickN  = 0;    // nombre de clics sur le point courant
 let calibFlash   = 0;    // timestamp du dernier clic validé (pour animation)
+let calibSamples = [];   // {fx,fy} bruts WebGazer collectés pendant la calibration
+let gazeRangeX   = { min: 0, max: 1 };  // plage observée, mise à jour après calibration
+let gazeRangeY   = { min: 0, max: 1 };
 
 // ── ÉDITEUR DE NOTES ─────────────────────────────────────────────────────────
 const noteGrid   = document.getElementById('note-grid');
@@ -363,12 +370,14 @@ const ctx2d   = overlay.getContext('2d');
 
 // ── PHASE DE CALIBRATION ──────────────────────────────────────────────────────
 function startCalibration() {
-  webgazer.clearData();   // repart de zéro à chaque calibration
-  calibIdx   = 0;
-  calibFlash = 0;
+  webgazer.clearData();
+  calibIdx     = 0;
+  calibClickN  = 0;
+  calibFlash   = 0;
+  calibSamples = [];
   lastGazeTime = 0;
   document.getElementById('status').textContent =
-    'Calibration — fixe le point et clique dessus (9 points)';
+    `Calibration — fixe le point et clique dessus (${N_CLICKS} clics par point)`;
 }
 
 function drawCalibration() {
@@ -418,11 +427,11 @@ function drawCalibration() {
   ctx2d.fillText('Fixe le point et clique dessus', W / 2, ya);
   ctx2d.font = `${Math.round(S * 0.026)}px monospace`;
   ctx2d.fillStyle = '#555';
-  ctx2d.fillText(`${calibIdx + 1} / ${CAL_POINTS.length}`, W / 2, yb);
+  ctx2d.fillText(`Point ${calibIdx + 1}/${CAL_POINTS.length} · Clic ${calibClickN + 1}/${N_CLICKS}`, W / 2, yb);
   ctx2d.textBaseline = 'alphabetic';
 }
 
-// Clic sur le canvas : valide le point si on clique assez près du dot
+// Clic sur le canvas : N_CLICKS clics par point, puis calcul automatique de la plage
 overlay.addEventListener('click', e => {
   if (calibIdx < 0 || calibIdx >= CAL_POINTS.length) return;
   const rect = overlay.getBoundingClientRect();
@@ -434,12 +443,27 @@ overlay.addEventListener('click', e => {
   const tx = rx * overlay.width, ty = ry * overlay.height;
   if (Math.hypot(mx - tx, my - ty) > Math.min(overlay.width, overlay.height) * 0.10) return;
 
+  // Enregistrer la prédiction brute WebGazer à ce moment
+  calibSamples.push({ fx: lastRawGaze.fx, fy: lastRawGaze.fy });
+
   calibFlash = performance.now();
-  calibIdx++;
-  if (calibIdx >= CAL_POINTS.length) {
-    calibIdx = -1;
-    document.getElementById('status').textContent =
-      'Calibration terminée ✓ — regarde l\'écran pour jouer';
+  calibClickN++;
+
+  if (calibClickN >= N_CLICKS) {
+    calibClickN = 0;
+    calibIdx++;
+    if (calibIdx >= CAL_POINTS.length) {
+      calibIdx = -1;
+      // Calculer la plage réelle observée → normalisation automatique
+      const fxs = calibSamples.map(s => s.fx);
+      const fys = calibSamples.map(s => s.fy);
+      const pad = 0.04;
+      gazeRangeX = { min: Math.min(...fxs) - pad, max: Math.max(...fxs) + pad };
+      gazeRangeY = { min: Math.min(...fys) - pad, max: Math.max(...fys) + pad };
+      calibSamples = [];
+      document.getElementById('status').textContent =
+        'Calibration terminée ✓ — regarde l\'écran pour jouer';
+    }
   }
 });
 
@@ -451,7 +475,15 @@ function gazeListener(data) {
   const rect = overlay.getBoundingClientRect();
   let fx = (data.x - rect.left) / rect.width;
   let fy = (data.y - rect.top)  / rect.height;
+  lastRawGaze.fx = fx;
+  lastRawGaze.fy = fy;
+  if (calibIdx >= 0) return;   // pendant la calibration, on ne met pas à jour le theremine
+
   if (mirrored) fx = 1 - fx;
+  // Normalisation sur la plage réelle observée pendant la calibration
+  const rx = gazeRangeX, ry = gazeRangeY;
+  if (rx.max > rx.min + 0.01) fx = (fx - rx.min) / (rx.max - rx.min);
+  if (ry.max > ry.min + 0.01) fy = (fy - ry.min) / (ry.max - ry.min);
   lastGaze.fx += (fx - lastGaze.fx) * 0.25;
   lastGaze.fy += (fy - lastGaze.fy) * 0.25;
   lastGazeTime = Date.now();
