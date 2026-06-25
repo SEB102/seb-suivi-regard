@@ -754,7 +754,7 @@ function collectionFrame() {
   const ya = t.y < 0.35 ? H * .81 : H * .14, yb = t.y < 0.35 ? H * .87 : H * .20;
   const minLeft = Math.round((cs.targets.length - cs.i) * (COLL_SETTLE + COLL_CAPTURE) / 60000);
   ctx2d.font = `bold ${Math.round(S * .038)}px monospace`; ctx2d.fillStyle = '#fff';
-  ctx2d.fillText(capturing ? 'Fixe le point (tête immobile)' : 'Prépare-toi…', W / 2, ya);
+  ctx2d.fillText(capturing ? 'Fixe le point — bouge légèrement la tête' : 'Prépare-toi…', W / 2, ya);
   ctx2d.font = `${Math.round(S * .026)}px monospace`; ctx2d.fillStyle = '#9aab9f';
   ctx2d.fillText(`Pt ${cs.i + 1}/${cs.targets.length} · ${cs.data.length} éch. · ~${minLeft} min`, W / 2, yb);
   const prog = cs.i / cs.targets.length;
