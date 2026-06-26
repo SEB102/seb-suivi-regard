@@ -59,6 +59,12 @@
     <label><span>Gain H</span>
       <input id="num-gainh" type="number" min="1" max="50" step="1" value="10">
     </label>
+    <label><span>Lissage</span>
+      <input id="num-smooth" type="number" min="0.01" max="0.99" step="0.01" value="0.06">
+    </label>
+    <label style="display:flex;align-items:center;gap:4px">
+      <input id="chk-inv" type="checkbox"><span>Inv H</span>
+    </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
     <label style="display:flex;align-items:center;gap:4px">
       <input id="chk-dbg" type="checkbox"><span>Debug</span>
@@ -82,13 +88,23 @@ let lastCrop = { sx: 0, sy: 0, sw: 1, sh: 1 };
 let lastT    = -1;
 let animFrame = null;
 let currentStream = null;
-let cursorFx = 0.5; // position horizontale courante du curseur (0–1)
+let cursorFx  = 0.5;
+let smoothing = 0.06;
+let invertH   = false;
+let centerV   = 0;
+let vertState = 'neutral'; // 'up' | 'down' | 'neutral'
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
-const numGainH = document.getElementById('num-gainh');
+document.getElementById('chk-inv').addEventListener('change', e => { invertH = e.target.checked; });
+const numGainH  = document.getElementById('num-gainh');
+const numSmooth = document.getElementById('num-smooth');
 numGainH.addEventListener('change', () => {
   gainH = Math.max(0.5, parseFloat(numGainH.value) || 10);
   numGainH.value = gainH;
+});
+numSmooth.addEventListener('change', () => {
+  smoothing = Math.max(0.01, Math.min(0.99, parseFloat(numSmooth.value) || 0.06));
+  numSmooth.value = smoothing;
 });
 
 // ── CANVAS ────────────────────────────────────────────────────────────────────
@@ -247,8 +263,12 @@ function drawFrame(res) {
     const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
     if (gaze) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
-      const targetFx = Math.max(0, Math.min(1, 0.5 + (lastGaze.h - centerH) * gainH));
-      cursorFx += (targetFx - cursorFx) * 0.06;
+      lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
+      const dv = lastGaze.v - centerV;
+      vertState = dv > 0.02 ? 'down' : dv < -0.02 ? 'up' : 'neutral';
+      const sign = invertH ? -1 : 1;
+      const targetFx = Math.max(0, Math.min(1, 0.5 + sign * (lastGaze.h - centerH) * gainH));
+      cursorFx += (targetFx - cursorFx) * smoothing;
     }
   }
 
@@ -275,6 +295,21 @@ function drawFrame(res) {
   ctx2d.lineWidth = Math.max(1.5, 2 * k);
   ctx2d.strokeStyle = 'rgba(0,0,0,0.5)'; ctx2d.stroke();
 
+  // Indicateur vertical HAUT / BAS
+  if (vertState !== 'neutral') {
+    const isUp  = vertState === 'up';
+    const label = isUp ? '↑  HAUT' : '↓  BAS';
+    const col   = isUp ? 'rgba(80,200,255,0.95)' : 'rgba(255,140,60,0.95)';
+    const vy    = isUp ? H * 0.22 : H * 0.78;
+    ctx2d.font = `bold ${Math.round(30*k)}px monospace`;
+    ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
+    ctx2d.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx2d.fillText(label, W/2 + 2, vy + 2);
+    ctx2d.fillStyle = col;
+    ctx2d.fillText(label, W/2, vy);
+    ctx2d.textAlign = 'start'; ctx2d.textBaseline = 'alphabetic';
+  }
+
   // Cadre
   ctx2d.strokeStyle = 'rgba(255,255,255,0.18)';
   ctx2d.lineWidth = Math.max(1, k);
@@ -296,9 +331,9 @@ function drawFrame(res) {
     ctx2d.font = `${Math.round(11*k)}px monospace`;
     ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
     ctx2d.fillStyle = 'rgba(0,255,130,0.95)';
-    ctx2d.fillText(`h ${dbgH.toFixed(3)}`, 8*k, 8*k);
-    ctx2d.fillText(`centre h ${centerH.toFixed(3)}`, 8*k, 22*k);
-    ctx2d.fillText(`iris ${dbgIris1 ? 'G✓' : 'G✗'}  ${dbgIris2 ? 'D✓' : 'D✗'}`, 8*k, 36*k);
+    ctx2d.fillText(`h ${dbgH.toFixed(3)}  v ${dbgV.toFixed(3)}`, 8*k, 8*k);
+    ctx2d.fillText(`ctr h ${centerH.toFixed(3)}  v ${centerV.toFixed(3)}`, 8*k, 22*k);
+    ctx2d.fillText(`vert: ${vertState}  iris ${dbgIris1 ? 'G✓' : 'G✗'} ${dbgIris2 ? 'D✓' : 'D✗'}`, 8*k, 36*k);
     ctx2d.textAlign = 'start'; ctx2d.textBaseline = 'alphabetic';
   }
 }
@@ -346,8 +381,9 @@ btnStart.addEventListener('click', async () => {
 // ── CENTRER ───────────────────────────────────────────────────────────────────
 document.getElementById('btn-ctr').addEventListener('click', () => {
   centerH = lastGaze.h;
+  centerV = lastGaze.v;
   document.getElementById('status').textContent =
-    `Centré ✓  (h=${centerH.toFixed(3)})`;
+    `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
 });
 
 // ── REDIMENSIONNEMENT / PLEIN ÉCRAN ───────────────────────────────────────────
