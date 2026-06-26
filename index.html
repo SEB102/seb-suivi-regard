@@ -57,7 +57,7 @@
   <div class="panel">
     <button id="btn-start">▶ START</button>
     <label><span>Gain H</span>
-      <input id="num-gainh" type="number" min="1" max="50" step="1" value="10">
+      <input id="num-gainh" type="number" min="1" max="100" step="1" value="20">
     </label>
     <label><span>Lissage</span>
       <input id="num-smooth" type="number" min="0.01" max="0.99" step="0.01" value="0.06">
@@ -69,7 +69,7 @@
       <input id="chk-fixed" type="checkbox"><span>Tête fixe</span>
     </label>
     <label><span>Seuil V</span>
-      <input id="num-thresh" type="number" min="0.5" max="20" step="0.5" value="1">
+      <input id="num-thresh" type="number" min="0.5" max="20" step="0.5" value="2">
     </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
     <label style="display:flex;align-items:center;gap:4px">
@@ -87,7 +87,7 @@
 let running  = false;
 let lastGaze = { h: 0, v: 0 };
 let centerH  = 0;
-let gainH    = 10;
+let gainH    = 20;
 let showDbg  = false;
 let faceBB   = { cx: 0.5, cy: 0.5, hw: 0.30 };
 let lastCrop = { sx: 0, sy: 0, sw: 1, sh: 1 };
@@ -99,7 +99,7 @@ let cursorFy   = 0.5;
 let smoothing  = 0.06;
 let invertH    = false;
 let centerV    = 0;
-let vertThresh = 0.01;
+let vertThresh = 0.02;
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
 let fixedHead  = false;
 
@@ -122,7 +122,7 @@ numSmooth.addEventListener('change', () => {
 const numThresh = document.getElementById('num-thresh');
 numThresh.addEventListener('change', () => {
   const raw = parseFloat(numThresh.value) / 100;
-  vertThresh = Math.max(0.005, Math.min(0.2, isNaN(raw) ? 0.01 : raw));
+  vertThresh = Math.max(0.005, Math.min(0.2, isNaN(raw) ? 0.02 : raw));
   numThresh.value = (vertThresh * 100).toFixed(1);
 });
 
