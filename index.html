@@ -66,7 +66,7 @@
       <input id="chk-inv" type="checkbox"><span>Inv H</span>
     </label>
     <label><span>Seuil V</span>
-      <input id="num-thresh" type="number" min="0.005" max="0.2" step="0.005" value="0.04">
+      <input id="num-thresh" type="number" min="0.5" max="20" step="0.5" value="4">
     </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
     <label style="display:flex;align-items:center;gap:4px">
@@ -97,7 +97,7 @@ let smoothing  = 0.06;
 let invertH    = false;
 let centerV    = 0;
 let vertThresh = 0.04;
-let vertState  = 'neutral'; // 'up' | 'down' | 'neutral'
+let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
 document.getElementById('chk-inv').addEventListener('change', e => { invertH = e.target.checked; });
@@ -113,8 +113,9 @@ numSmooth.addEventListener('change', () => {
 });
 const numThresh = document.getElementById('num-thresh');
 numThresh.addEventListener('change', () => {
-  vertThresh = Math.max(0.005, Math.min(0.2, parseFloat(numThresh.value) || 0.04));
-  numThresh.value = vertThresh;
+  const raw = parseFloat(numThresh.value) / 100;
+  vertThresh = Math.max(0.005, Math.min(0.2, isNaN(raw) ? 0.04 : raw));
+  numThresh.value = (vertThresh * 100).toFixed(1);
 });
 
 // ── CANVAS ────────────────────────────────────────────────────────────────────
@@ -275,9 +276,10 @@ function drawFrame(res) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
       lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
       const dv = lastGaze.v - centerV;
-      vertState = dv > vertThresh ? 'down' : dv < -vertThresh ? 'up' : 'neutral';
-      if (vertState === 'up')        cursorFy += (0.25 - cursorFy) * smoothing;
-      else if (vertState === 'down') cursorFy += (0.75 - cursorFy) * smoothing;
+      // Binaire : franchir le seuil bascule l'état ; dans la zone morte on maintient
+      if (dv >  vertThresh) vertState = 'down';
+      else if (dv < -vertThresh) vertState = 'up';
+      cursorFy = vertState === 'up' ? 0.25 : 0.75;
       const sign = invertH ? -1 : 1;
       const targetFx = Math.max(0, Math.min(1, 0.5 + sign * (lastGaze.h - centerH) * gainH));
       cursorFx += (targetFx - cursorFx) * smoothing;
