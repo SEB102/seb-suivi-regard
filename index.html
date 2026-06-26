@@ -65,6 +65,9 @@
     <label style="display:flex;align-items:center;gap:4px">
       <input id="chk-inv" type="checkbox"><span>Inv H</span>
     </label>
+    <label><span>Seuil V</span>
+      <input id="num-thresh" type="number" min="0.005" max="0.2" step="0.005" value="0.04">
+    </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
     <label style="display:flex;align-items:center;gap:4px">
       <input id="chk-dbg" type="checkbox"><span>Debug</span>
@@ -88,11 +91,13 @@ let lastCrop = { sx: 0, sy: 0, sw: 1, sh: 1 };
 let lastT    = -1;
 let animFrame = null;
 let currentStream = null;
-let cursorFx  = 0.5;
-let smoothing = 0.06;
-let invertH   = false;
-let centerV   = 0;
-let vertState = 'neutral'; // 'up' | 'down' | 'neutral'
+let cursorFx   = 0.5;
+let cursorFy   = 0.5;
+let smoothing  = 0.06;
+let invertH    = false;
+let centerV    = 0;
+let vertThresh = 0.04;
+let vertState  = 'neutral'; // 'up' | 'down' | 'neutral'
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
 document.getElementById('chk-inv').addEventListener('change', e => { invertH = e.target.checked; });
@@ -105,6 +110,11 @@ numGainH.addEventListener('change', () => {
 numSmooth.addEventListener('change', () => {
   smoothing = Math.max(0.01, Math.min(0.99, parseFloat(numSmooth.value) || 0.06));
   numSmooth.value = smoothing;
+});
+const numThresh = document.getElementById('num-thresh');
+numThresh.addEventListener('change', () => {
+  vertThresh = Math.max(0.005, Math.min(0.2, parseFloat(numThresh.value) || 0.04));
+  numThresh.value = vertThresh;
 });
 
 // ── CANVAS ────────────────────────────────────────────────────────────────────
@@ -265,50 +275,41 @@ function drawFrame(res) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
       lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
       const dv = lastGaze.v - centerV;
-      vertState = dv > 0.02 ? 'down' : dv < -0.02 ? 'up' : 'neutral';
+      vertState = dv > vertThresh ? 'down' : dv < -vertThresh ? 'up' : 'neutral';
+      if (vertState === 'up')        cursorFy += (0.25 - cursorFy) * smoothing;
+      else if (vertState === 'down') cursorFy += (0.75 - cursorFy) * smoothing;
       const sign = invertH ? -1 : 1;
       const targetFx = Math.max(0, Math.min(1, 0.5 + sign * (lastGaze.h - centerH) * gainH));
       cursorFx += (targetFx - cursorFx) * smoothing;
     }
   }
 
-  // Ligne horizontale centrale
-  const lineY = H / 2;
-  const lineR = Math.round(8 * k);  // rayon du "rail" demi-arrondi aux extrémités
-  ctx2d.strokeStyle = 'rgba(255,255,255,0.35)';
-  ctx2d.lineWidth = Math.max(2, 2 * k);
-  ctx2d.beginPath();
-  ctx2d.moveTo(lineR, lineY);
-  ctx2d.lineTo(W - lineR, lineY);
-  ctx2d.stroke();
-  // Marqueurs extrémités
-  for (const ex of [lineR, W - lineR]) {
-    ctx2d.beginPath(); ctx2d.arc(ex, lineY, lineR * 0.5, 0, Math.PI * 2);
-    ctx2d.fillStyle = 'rgba(255,255,255,0.2)'; ctx2d.fill();
-  }
-
-  // Point curseur sur la ligne
-  const cx = cursorFx * W;
-  const dotR = Math.round(12 * k);
-  ctx2d.beginPath(); ctx2d.arc(cx, lineY, dotR, 0, Math.PI * 2);
-  ctx2d.fillStyle = 'rgba(0,232,122,0.95)'; ctx2d.fill();
-  ctx2d.lineWidth = Math.max(1.5, 2 * k);
-  ctx2d.strokeStyle = 'rgba(0,0,0,0.5)'; ctx2d.stroke();
-
-  // Indicateur vertical HAUT / BAS
-  if (vertState !== 'neutral') {
-    const isUp  = vertState === 'up';
-    const label = isUp ? '↑  HAUT' : '↓  BAS';
-    const col   = isUp ? 'rgba(80,200,255,0.95)' : 'rgba(255,140,60,0.95)';
-    const vy    = isUp ? H * 0.22 : H * 0.78;
-    ctx2d.font = `bold ${Math.round(30*k)}px monospace`;
-    ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'middle';
-    ctx2d.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx2d.fillText(label, W/2 + 2, vy + 2);
-    ctx2d.fillStyle = col;
-    ctx2d.fillText(label, W/2, vy);
+  // Deux lignes HAUT (25%) et BAS (75%)
+  const lineR = Math.round(8 * k);
+  const lines = [
+    { y: H * 0.25, label: 'HAUT', col: 'rgba(80,200,255,0.55)',  tcol: 'rgba(80,200,255,0.8)'  },
+    { y: H * 0.75, label: 'BAS',  col: 'rgba(255,140,60,0.55)', tcol: 'rgba(255,140,60,0.8)'  },
+  ];
+  for (const ln of lines) {
+    ctx2d.strokeStyle = ln.col;
+    ctx2d.lineWidth = Math.max(2, 2 * k);
+    ctx2d.beginPath(); ctx2d.moveTo(lineR, ln.y); ctx2d.lineTo(W - lineR, ln.y); ctx2d.stroke();
+    ctx2d.font = `${Math.round(11*k)}px monospace`;
+    ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'bottom';
+    ctx2d.fillStyle = ln.tcol;
+    ctx2d.fillText(ln.label, lineR + 4*k, ln.y - 3*k);
     ctx2d.textAlign = 'start'; ctx2d.textBaseline = 'alphabetic';
   }
+
+  // Point curseur
+  const cx   = cursorFx * W;
+  const cy   = cursorFy * H;
+  const dotR = Math.round(12 * k);
+  const isUp = cursorFy < 0.5;
+  ctx2d.beginPath(); ctx2d.arc(cx, cy, dotR, 0, Math.PI * 2);
+  ctx2d.fillStyle = isUp ? 'rgba(80,200,255,0.95)' : 'rgba(255,140,60,0.95)'; ctx2d.fill();
+  ctx2d.lineWidth = Math.max(1.5, 2 * k);
+  ctx2d.strokeStyle = 'rgba(0,0,0,0.5)'; ctx2d.stroke();
 
   // Cadre
   ctx2d.strokeStyle = 'rgba(255,255,255,0.18)';
