@@ -247,7 +247,8 @@ function drawFrame(res) {
     const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
     if (gaze) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
-      cursorFx = Math.max(0, Math.min(1, 0.5 - (lastGaze.h - centerH) * gainH));
+      const targetFx = Math.max(0, Math.min(1, 0.5 - (lastGaze.h - centerH) * gainH));
+      cursorFx += (targetFx - cursorFx) * 0.06;
     }
   }
 
