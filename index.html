@@ -318,6 +318,7 @@ eyeCnv.width = 120; eyeCnv.height = 50;
 const eyeCtxOff = eyeCnv.getContext('2d', { willReadFrequently: true });
 
 let dbgH = 0, dbgV = 0;
+let dbgIris1 = null, dbgIris2 = null; // dernières positions iris détectées (debug)
 
 // Retourne la position de l'iris en coordonnées normalisées vidéo [0-1],
 // par centroïde des pixels sombres dans le crop de l'œil.
@@ -399,6 +400,7 @@ function gazeFromLandmarks(lm) {
   const v  = (dot(o1, u)/eW1 + dot(o2, u)/eW2) / 2;
 
   dbgH = h; dbgV = v;
+  dbgIris1 = iris1; dbgIris2 = iris2;
   return { h, v };
 }
 
@@ -415,6 +417,9 @@ function drawFrame(res) {
   };
 
   ctx2d.clearRect(0, 0, W, H);
+
+  // Fond caméra
+  if (video.readyState >= 2) ctx2d.drawImage(video, 0, 0, W, H);
 
   let cursor = null, haveFace = false;
 
@@ -450,7 +455,8 @@ function drawFrame(res) {
   }
   if (!haveFace && running) { playNote(-1, 0); document.getElementById('note-big').textContent = '—'; }
 
-  // Tuiles
+  // Tuiles (semi-transparentes pour voir la caméra en fond)
+  ctx2d.globalAlpha = 0.52;
   for (let i = 0; i < N; i++) {
     const aC = i*sw, b0 = aC-sw/2, b1 = aC+sw/2, edge = radAt(1, aC);
     const p1x = cxC + rSilent*Math.sin(b0), p1y = cyC - rSilent*Math.cos(b0);
@@ -472,6 +478,8 @@ function drawFrame(res) {
     ctx2d.strokeStyle = active ? 'rgba(0,255,130,0.9)' : 'rgba(255,255,255,0.22)';
     ctx2d.lineWidth = active ? 2.5*k : Math.max(1,k); ctx2d.stroke();
   }
+
+  ctx2d.globalAlpha = 1;
 
   // Cadre
   ctx2d.strokeStyle = 'rgba(255,255,255,0.28)'; ctx2d.lineWidth = Math.max(2,2*k);
@@ -504,8 +512,21 @@ function drawFrame(res) {
   }
   ctx2d.textBaseline = 'alphabetic';
 
-  // Debug : valeurs brutes du regard (utile pour régler les gains)
+  // Debug : croix sur les iris détectés + valeurs brutes
   if (showDbg) {
+    // Croix rouges sur les iris (coordonnées normalisées vidéo → pixels canvas)
+    const vW = video.videoWidth || 640, vH = video.videoHeight || 480;
+    const scX = W / vW, scY = H / vH;
+    for (const ir of [dbgIris1, dbgIris2]) {
+      if (!ir) continue;
+      const cx = ir.x * vW * scX, cy = ir.y * vH * scY;
+      const r2 = 8 * k;
+      ctx2d.strokeStyle = '#ff2222'; ctx2d.lineWidth = 2 * k;
+      ctx2d.beginPath(); ctx2d.moveTo(cx-r2,cy); ctx2d.lineTo(cx+r2,cy); ctx2d.stroke();
+      ctx2d.beginPath(); ctx2d.moveTo(cx,cy-r2); ctx2d.lineTo(cx,cy+r2); ctx2d.stroke();
+      ctx2d.beginPath(); ctx2d.arc(cx, cy, r2*0.6, 0, Math.PI*2);
+      ctx2d.strokeStyle = 'rgba(255,255,0,0.9)'; ctx2d.stroke();
+    }
     ctx2d.font = `${Math.round(11*k)}px monospace`;
     ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
     ctx2d.fillStyle = 'rgba(0,255,130,0.95)';
