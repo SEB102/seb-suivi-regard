@@ -57,7 +57,7 @@
   <div class="panel">
     <button id="btn-start">▶ START</button>
     <label><span>Gain H</span>
-      <input id="num-gainh" type="number" min="1" max="100" step="1" value="20">
+      <input id="num-gainh" type="number" min="1" max="100" step="1" value="30">
     </label>
     <label><span>Lissage</span>
       <input id="num-smooth" type="number" min="0.01" max="0.99" step="0.01" value="0.06">
@@ -87,7 +87,7 @@
 let running  = false;
 let lastGaze = { h: 0, v: 0 };
 let centerH  = 0;
-let gainH    = 20;
+let gainH    = 30;
 let showDbg  = false;
 let faceBB   = { cx: 0.5, cy: 0.5, hw: 0.30 };
 let lastCrop = { sx: 0, sy: 0, sw: 1, sh: 1 };
@@ -286,16 +286,9 @@ function drawFrame(res) {
     faceBB.hw += (thw - faceBB.hw) * 0.08;
   }
 
-  // Fond caméra zoomé
-  if (video.readyState >= 2) {
-    const vW = video.videoWidth || 640, vH = video.videoHeight || 480;
-    const hw = faceBB.hw;
-    const hh = hw * (vW / vH) * (H / W);
-    const x0 = Math.max(0, faceBB.cx - hw), x1 = Math.min(1, faceBB.cx + hw);
-    const y0 = Math.max(0, faceBB.cy - hh), y1 = Math.min(1, faceBB.cy + hh);
-    lastCrop = { sx: x0, sy: y0, sw: x1 - x0, sh: y1 - y0 };
-    ctx2d.drawImage(video, x0*vW, y0*vH, (x1-x0)*vW, (y1-y0)*vH, 0, 0, W, H);
-  }
+  // Fond noir
+  ctx2d.fillStyle = '#000';
+  ctx2d.fillRect(0, 0, W, H);
 
   // Calcul du regard
   if (res.faceLandmarks?.length) {
