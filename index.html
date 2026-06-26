@@ -114,6 +114,7 @@
       <input id="rng-vol" type="range" min="0" max="1" step="0.01" value="0.7">
     </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
+    <label style="display:flex;align-items:center;gap:4px"><input id="chk-dbg" type="checkbox"><span>Debug</span></label>
     <button id="btn-fs">⛶ Plein écran</button>
     <div id="note-big">—</div>
     <button id="btn-edit" style="margin-left:auto">NOTES ▾</button>
@@ -186,11 +187,12 @@ let notes     = genNotes(60, 'M', SCALES.M.length);
 let running   = false;
 let activeIdx = -1;
 let activeVol = 0;
-let lastGaze  = { h: 0, v: 0 };  // blend shape gaze lissé
+let lastGaze  = { h: 0, v: 0 };  // regard lissé (repère 3D visage)
 let centerH   = 0;                // zéro de référence (bouton Centrer)
 let centerV   = 0;
 let gainH     = 10;
 let gainV     = 10;
+let showDbg   = false;            // affichage valeurs brutes h/v
 let lastT     = -1;
 let animFrame = null;
 let currentStream = null;
@@ -227,6 +229,7 @@ document.getElementById('btn-regen').addEventListener('click', regenFromScale);
 selScale.addEventListener('change', regenFromScale);
 selRoot.addEventListener('change', regenFromScale);
 
+document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
 const numGainH = document.getElementById('num-gainh');
 const numGainV = document.getElementById('num-gainv');
 numGainH.addEventListener('change', () => { gainH = Math.max(0.5, parseFloat(numGainH.value) || 3); numGainH.value = gainH; });
@@ -302,41 +305,57 @@ const hl = await FaceLandmarker.createFromOptions(fs, {
 document.getElementById('status').textContent =
   'Prêt — ▶ START puis ◎ Centrer en regardant droit devant';
 
-// ── LANDMARKS IRIS → REGARD ───────────────────────────────────────────────────
-// Iris lm[468] (gauche) et lm[473] (droite).
-// Horizontal : normalisé par rapport aux coins horizontaux de l'œil.
-// Vertical   : iris Y par rapport à la HAUTEUR MOYENNE des coins (≠ paupières).
-//   Les paupières montent avec l'iris → signal s'annule ou s'inverse.
-//   Les coins de l'œil (33/133, 362/263) restent stables sous rotation verticale.
+// ── REGARD PAR REPÈRE 3D DU VISAGE ────────────────────────────────────────────
+// Méthode model-based / compensée pose de tête :
+//  1. On reconstruit un repère 3D attaché au visage (axes droite r, haut u, avant f)
+//     à partir de landmarks STABLES (coins des yeux, arête du nez, menton).
+//  2. On mesure le décalage 3D de l'iris dans son orbite et on le projette sur (r, u).
+//  Quand la tête tourne, le repère tourne avec → le signal ne dépend plus que de la
+//  rotation de l'œil dans son orbite. On utilise enfin la coordonnée z (profondeur).
+//
+//  Indices : iris 468 / 473  ·  coins œil 33/133 et 362/263
+//            arête nez 168 → menton 152 (axe vertical)  ·  paupières 159/145, 386/374
+let dbgH = 0, dbgV = 0; // affichage debug
+
 function gazeFromLandmarks(lm) {
   if (!lm || lm.length < 478) return null;
 
-  const li = lm[468], ri = lm[473]; // centres iris
+  // x = fraction de largeur, y = fraction de hauteur, z ≈ échelle de x.
+  // On ramène y dans la même échelle que x via l'aspect ratio caméra.
+  const asp = (video.videoHeight && video.videoWidth)
+    ? video.videoHeight / video.videoWidth : 0.75;
+  const P = i => ({ x: lm[i].x, y: lm[i].y * asp, z: lm[i].z });
 
-  // Coins des yeux — référence stable horizontalement et verticalement
-  const lxL = Math.min(lm[33].x, lm[133].x), lxR = Math.max(lm[33].x, lm[133].x);
-  const rxL = Math.min(lm[362].x, lm[263].x), rxR = Math.max(lm[362].x, lm[263].x);
-  const lW = lxR - lxL, rW = rxR - rxL;
-  if (lW < 0.005 || rW < 0.005) return null;
+  const sub   = (a, b) => ({ x:a.x-b.x, y:a.y-b.y, z:a.z-b.z });
+  const mid   = (a, b) => ({ x:(a.x+b.x)/2, y:(a.y+b.y)/2, z:(a.z+b.z)/2 });
+  const dot   = (a, b) => a.x*b.x + a.y*b.y + a.z*b.z;
+  const cross = (a, b) => ({ x:a.y*b.z-a.z*b.y, y:a.z*b.x-a.x*b.z, z:a.x*b.y-a.y*b.x });
+  const len   = a => Math.hypot(a.x, a.y, a.z) || 1e-6;
+  const norm  = a => { const l = len(a); return { x:a.x/l, y:a.y/l, z:a.z/l }; };
 
-  // EAR via paupières — UNIQUEMENT pour détecter le clignement
-  const lyT = Math.min(lm[159].y, lm[145].y), lyB = Math.max(lm[159].y, lm[145].y);
-  const ryT = Math.min(lm[386].y, lm[374].y), ryB = Math.max(lm[386].y, lm[374].y);
-  if ((lyB - lyT) / lW < 0.08 && (ryB - ryT) / rW < 0.08) return null;
+  // Repère 3D attaché au visage
+  let r = sub(P(263), P(33));        // axe across-face (coin œil → coin œil)
+  const vDown = sub(P(152), P(168)); // arête nez → menton (vers le bas)
+  let f = cross(r, vDown);           // avant
+  let u = cross(f, r);               // haut/bas exact, orthogonal à r et f
+  r = norm(r); u = norm(u); f = norm(f);
 
-  // Horizontal : iris normalisé bord-à-bord ; regard gauche → iris droite image → h > 0
-  const lH = (li.x - lxL) / lW;
-  const rH = (ri.x - rxL) / rW;
-  const h  = (lH + rH) / 2 - 0.5;
+  // Oriente r vers la droite image (+x) et u vers le bas image (+y) → signes stables
+  if (r.x < 0) { r.x*=-1; r.y*=-1; r.z*=-1; }
+  if (u.y < 0) { u.x*=-1; u.y*=-1; u.z*=-1; }
 
-  // Vertical : iris Y − hauteur moyenne des coins (coins fixes sous rotation oculaire)
-  // v < 0 = regard haut (iris au-dessus des coins), v > 0 = regard bas
-  const lCy = (lm[33].y + lm[133].y) / 2;
-  const rCy = (lm[362].y + lm[263].y) / 2;
-  const lV = (li.y - lCy) / lW;
-  const rV = (ri.y - rCy) / rW;
-  const v  = (lV + rV) / 2;
+  // Largeur des yeux + clignement (EAR)
+  const eW1 = len(sub(P(133), P(33))),  eW2 = len(sub(P(263), P(362)));
+  const eH1 = len(sub(P(159), P(145))), eH2 = len(sub(P(386), P(374)));
+  if (eH1/eW1 < 0.10 && eH2/eW2 < 0.10) return null;
 
+  // Décalage 3D iris ↔ centre orbite, projeté sur (r, u), normalisé par la largeur d'œil
+  const o1 = sub(P(468), mid(P(33),  P(133)));
+  const o2 = sub(P(473), mid(P(362), P(263)));
+  const h = (dot(o1, r)/eW1 + dot(o2, r)/eW2) / 2; // >0 = iris vers droite image = regard gauche sujet
+  const v = (dot(o1, u)/eW1 + dot(o2, u)/eW2) / 2; // >0 = iris vers bas image = regard bas
+
+  dbgH = h; dbgV = v;
   return { h, v };
 }
 
@@ -441,6 +460,16 @@ function drawFrame(res) {
     ctx2d.strokeStyle = 'rgba(0,0,0,0.6)'; ctx2d.stroke();
   }
   ctx2d.textBaseline = 'alphabetic';
+
+  // Debug : valeurs brutes du regard (utile pour régler les gains)
+  if (showDbg) {
+    ctx2d.font = `${Math.round(11*k)}px monospace`;
+    ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
+    ctx2d.fillStyle = 'rgba(0,255,130,0.95)';
+    ctx2d.fillText(`h ${dbgH.toFixed(3)}  v ${dbgV.toFixed(3)}`, 8*k, 8*k);
+    ctx2d.fillText(`centre  h ${centerH.toFixed(3)}  v ${centerV.toFixed(3)}`, 8*k, 22*k);
+    ctx2d.textAlign = 'start'; ctx2d.textBaseline = 'alphabetic';
+  }
 }
 
 function frameLoop() {
