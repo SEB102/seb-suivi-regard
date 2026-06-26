@@ -65,6 +65,9 @@
     <label style="display:flex;align-items:center;gap:4px">
       <input id="chk-inv" type="checkbox"><span>Inv H</span>
     </label>
+    <label style="display:flex;align-items:center;gap:4px">
+      <input id="chk-fixed" type="checkbox"><span>Tête fixe</span>
+    </label>
     <label><span>Seuil V</span>
       <input id="num-thresh" type="number" min="0.5" max="20" step="0.5" value="1">
     </label>
@@ -98,9 +101,14 @@ let invertH    = false;
 let centerV    = 0;
 let vertThresh = 0.01;
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
+let fixedHead  = false;
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
 document.getElementById('chk-inv').addEventListener('change', e => { invertH = e.target.checked; });
+document.getElementById('chk-fixed').addEventListener('change', e => {
+  fixedHead = e.target.checked;
+  if (fixedHead) { centerH = lastGaze.h; centerV = lastGaze.v; }
+});
 const numGainH  = document.getElementById('num-gainh');
 const numSmooth = document.getElementById('num-smooth');
 numGainH.addEventListener('change', () => {
@@ -240,6 +248,26 @@ function gazeFromLandmarks(lm) {
   return { h, v };
 }
 
+// ── REGARD 2D (mode tête fixe) ────────────────────────────────────────────────
+// Pas de repère 3D : offset iris/coins en 2D pur, valide uniquement si la tête
+// ne tourne pas (la perspective n'est donc plus compensée).
+function gazeFromLandmarks2D(lm) {
+  if (!lm || lm.length < 478) return null;
+  const earW1 = Math.abs(lm[133].x - lm[33].x),  earW2 = Math.abs(lm[263].x - lm[362].x);
+  const earH1 = Math.abs(lm[159].y - lm[145].y),  earH2 = Math.abs(lm[386].y - lm[374].y);
+  if (earW1 < 0.005 || earW2 < 0.005) return null;
+  if (earH1/earW1 < 0.04 && earH2/earW2 < 0.04) return null;
+  const iris1 = irisPixel(lm, 33,  133, 468) ?? { x: lm[468].x, y: lm[468].y };
+  const iris2 = irisPixel(lm, 362, 263, 473) ?? { x: lm[473].x, y: lm[473].y };
+  const cx1 = (lm[33].x + lm[133].x) / 2, cy1 = (lm[33].y + lm[133].y) / 2;
+  const cx2 = (lm[362].x + lm[263].x) / 2, cy2 = (lm[362].y + lm[263].y) / 2;
+  const h = ((iris1.x - cx1) / earW1 + (iris2.x - cx2) / earW2) / 2;
+  const v = ((iris1.y - cy1) / earW1 + (iris2.y - cy2) / earW2) / 2;
+  dbgH = h; dbgV = v;
+  dbgIris1 = iris1; dbgIris2 = iris2;
+  return { h, v };
+}
+
 // ── RENDU ─────────────────────────────────────────────────────────────────────
 function drawFrame(res) {
   const W = overlay.width, H = overlay.height;
@@ -269,14 +297,20 @@ function drawFrame(res) {
     ctx2d.drawImage(video, x0*vW, y0*vH, (x1-x0)*vW, (y1-y0)*vH, 0, 0, W, H);
   }
 
-  // Calcul du regard → position horizontale du curseur
+  // Calcul du regard
   if (res.faceLandmarks?.length) {
-    const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
+    const gaze = fixedHead
+      ? gazeFromLandmarks2D(res.faceLandmarks[0])
+      : gazeFromLandmarks(res.faceLandmarks[0]);
     if (gaze) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
       lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
+      // En mode tête fixe : auto-centrage par EMA très lente
+      if (fixedHead) {
+        centerH += (lastGaze.h - centerH) * 0.002;
+        centerV += (lastGaze.v - centerV) * 0.002;
+      }
       const dv = lastGaze.v - centerV;
-      // Binaire : franchir le seuil bascule l'état ; dans la zone morte on maintient
       if (dv >  vertThresh) vertState = 'down';
       else if (dv < -vertThresh) vertState = 'up';
       cursorFy = vertState === 'up' ? 0.25 : 0.75;
