@@ -305,26 +305,63 @@ const hl = await FaceLandmarker.createFromOptions(fs, {
 document.getElementById('status').textContent =
   'Prêt — ▶ START puis ◎ Centrer en regardant droit devant';
 
-// ── REGARD PAR REPÈRE 3D DU VISAGE ────────────────────────────────────────────
-// Méthode model-based / compensée pose de tête :
-//  1. On reconstruit un repère 3D attaché au visage (axes droite r, haut u, avant f)
-//     à partir de landmarks STABLES (coins des yeux, arête du nez, menton).
-//  2. On mesure le décalage 3D de l'iris dans son orbite et on le projette sur (r, u).
-//  Quand la tête tourne, le repère tourne avec → le signal ne dépend plus que de la
-//  rotation de l'œil dans son orbite. On utilise enfin la coordonnée z (profondeur).
-//
-//  Indices : iris 468 / 473  ·  coins œil 33/133 et 362/263
-//            arête nez 168 → menton 152 (axe vertical)  ·  paupières 159/145, 386/374
-let dbgH = 0, dbgV = 0; // affichage debug
+// ── REGARD : repère 3D visage + détection iris par pixels ─────────────────────
+// Pipeline :
+//  1. Repère 3D visage (r/u/f) depuis les landmarks MediaPipe → compensation pose de tête
+//  2. Crop de l'œil extrait de la vidéo PLEINE RÉSOLUTION → zoom logiciel
+//  3. Centroïde des pixels sombres dans ce crop → position iris à la précision pixel
+//  4. Projection du décalage iris-orbite sur (r, u) → h/v indépendants de la pose
+
+// Canvas caché pour les crops d'œil (willReadFrequently car on lit getImageData à chaque frame)
+const eyeCnv = document.createElement('canvas');
+eyeCnv.width = 120; eyeCnv.height = 50;
+const eyeCtxOff = eyeCnv.getContext('2d', { willReadFrequently: true });
+
+let dbgH = 0, dbgV = 0;
+
+// Retourne la position de l'iris en coordonnées normalisées vidéo [0-1],
+// par centroïde des pixels sombres dans le crop de l'œil.
+function irisPixel(lm, c1, c2, fallbackZ) {
+  const vW = video.videoWidth || 640, vH = video.videoHeight || 480;
+  const x1 = lm[c1].x * vW, x2 = lm[c2].x * vW;
+  const y1 = lm[c1].y * vH, y2 = lm[c2].y * vH;
+  const xMin = Math.min(x1, x2), eyeW = Math.abs(x2 - x1);
+  const pad  = eyeW * 0.4;
+  const bx   = Math.max(0, xMin - pad);
+  const bw   = Math.min(vW - bx, eyeW + pad * 2);
+  const yCtr = (y1 + y2) / 2;
+  const bh   = bw * 0.65;
+  const by   = Math.max(0, yCtr - bh / 2);
+  const bh2  = Math.min(vH - by, bh);
+  if (bw < 5 || bh2 < 5) return null;
+
+  try { eyeCtxOff.drawImage(video, bx, by, bw, bh2, 0, 0, 120, 50); }
+  catch { return null; }
+  const d = eyeCtxOff.getImageData(0, 0, 120, 50).data;
+
+  let sx = 0, sy = 0, tot = 0;
+  for (let y = 3; y < 47; y++) {
+    for (let x = 3; x < 117; x++) {
+      const i = (y * 120 + x) * 4;
+      const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+      const w = Math.max(0, 90 - lum) ** 2; // fort poids sur les pixels très sombres (iris/pupille)
+      sx += x * w; sy += y * w; tot += w;
+    }
+  }
+  if (tot < 100) return null;
+  return {
+    x: (bx + (sx / tot / 120) * bw) / vW,  // coordonnées normalisées vidéo
+    y: (by + (sy / tot / 50)  * bh2) / vH,
+    z: fallbackZ
+  };
+}
 
 function gazeFromLandmarks(lm) {
   if (!lm || lm.length < 478) return null;
 
-  // x = fraction de largeur, y = fraction de hauteur, z ≈ échelle de x.
-  // On ramène y dans la même échelle que x via l'aspect ratio caméra.
   const asp = (video.videoHeight && video.videoWidth)
     ? video.videoHeight / video.videoWidth : 0.75;
-  const P = i => ({ x: lm[i].x, y: lm[i].y * asp, z: lm[i].z });
+  const P  = i => ({ x: lm[i].x, y: lm[i].y * asp, z: lm[i].z });
 
   const sub   = (a, b) => ({ x:a.x-b.x, y:a.y-b.y, z:a.z-b.z });
   const mid   = (a, b) => ({ x:(a.x+b.x)/2, y:(a.y+b.y)/2, z:(a.z+b.z)/2 });
@@ -333,27 +370,33 @@ function gazeFromLandmarks(lm) {
   const len   = a => Math.hypot(a.x, a.y, a.z) || 1e-6;
   const norm  = a => { const l = len(a); return { x:a.x/l, y:a.y/l, z:a.z/l }; };
 
-  // Repère 3D attaché au visage
-  let r = sub(P(263), P(33));        // axe across-face (coin œil → coin œil)
-  const vDown = sub(P(152), P(168)); // arête nez → menton (vers le bas)
-  let f = cross(r, vDown);           // avant
-  let u = cross(f, r);               // haut/bas exact, orthogonal à r et f
+  // ① Repère 3D du visage
+  let r = sub(P(263), P(33));
+  const vDown = sub(P(152), P(168));
+  let f = cross(r, vDown);
+  let u = cross(f, r);
   r = norm(r); u = norm(u); f = norm(f);
-
-  // Oriente r vers la droite image (+x) et u vers le bas image (+y) → signes stables
   if (r.x < 0) { r.x*=-1; r.y*=-1; r.z*=-1; }
   if (u.y < 0) { u.x*=-1; u.y*=-1; u.z*=-1; }
 
-  // Largeur des yeux + clignement (EAR)
+  // ② Clignement (EAR depuis landmarks)
   const eW1 = len(sub(P(133), P(33))),  eW2 = len(sub(P(263), P(362)));
   const eH1 = len(sub(P(159), P(145))), eH2 = len(sub(P(386), P(374)));
   if (eH1/eW1 < 0.10 && eH2/eW2 < 0.10) return null;
 
-  // Décalage 3D iris ↔ centre orbite, projeté sur (r, u), normalisé par la largeur d'œil
-  const o1 = sub(P(468), mid(P(33),  P(133)));
-  const o2 = sub(P(473), mid(P(362), P(263)));
-  const h = (dot(o1, r)/eW1 + dot(o2, r)/eW2) / 2; // >0 = iris vers droite image = regard gauche sujet
-  const v = (dot(o1, u)/eW1 + dot(o2, u)/eW2) / 2; // >0 = iris vers bas image = regard bas
+  // ③ Position iris par centroïde de pixels sombres (pleine résolution caméra)
+  const iris1 = irisPixel(lm, 33,  133,  lm[468].z);
+  const iris2 = irisPixel(lm, 362, 263,  lm[473].z);
+  if (!iris1 || !iris2) return null;
+
+  const I1 = { x: iris1.x, y: iris1.y * asp, z: iris1.z };
+  const I2 = { x: iris2.x, y: iris2.y * asp, z: iris2.z };
+
+  // ④ Décalage iris ↔ centre orbite, projeté sur le repère 3D du visage
+  const o1 = sub(I1, mid(P(33),  P(133)));
+  const o2 = sub(I2, mid(P(362), P(263)));
+  const h  = (dot(o1, r)/eW1 + dot(o2, r)/eW2) / 2;
+  const v  = (dot(o1, u)/eW1 + dot(o2, u)/eW2) / 2;
 
   dbgH = h; dbgV = v;
   return { h, v };
@@ -485,7 +528,7 @@ function frameLoop() {
 async function startCamera() {
   if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
   currentStream = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 640 }, height: { ideal: 480 } }
+    video: { width: { ideal: 1280 }, height: { ideal: 720 } }
   });
   video.srcObject = currentStream;
   await video.play();
