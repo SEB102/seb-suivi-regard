@@ -37,44 +37,13 @@
     button.on { background: var(--accent); color: #000; font-weight: bold; }
     label { display: flex; align-items: center; gap: 5px; font-size: .78em; color: #555; }
     label span { color: var(--text); }
-    select {
-      background: var(--bg); color: var(--text); border: 1px solid #2a2a3a;
-      padding: 3px 5px; font-family: monospace; font-size: .78em; border-radius: 2px;
-    }
     input[type=number] {
-      width: 48px; background: var(--bg); color: var(--accent);
+      width: 52px; background: var(--bg); color: var(--accent);
       border: 1px solid #2a2a3a; padding: 3px 4px;
       font-family: monospace; font-size: .78em; border-radius: 2px;
     }
-    input[type=range] { width: 70px; accent-color: var(--accent); }
-    #note-big { font-size: 1.5em; color: var(--accent); font-weight: bold; min-width: 72px; text-align: center; }
-    #note-editor { display: none; width: 100%; max-width: 640px; }
-    #note-editor.open { display: block; }
-    .note-editor-hdr {
-      background: var(--panel); border: 1px solid #1e1e30; border-bottom: none;
-      border-radius: 4px 4px 0 0; padding: 5px 12px; font-size: .75em; color: #555;
-      display: flex; justify-content: space-between; align-items: center;
-    }
-    .note-editor-hdr button { border: none; padding: 2px 8px; font-size: .78em; color: #555; border-color: #333; }
-    .note-grid {
-      background: var(--panel); border: 1px solid #1e1e30; border-top: none;
-      border-radius: 0 0 4px 4px; padding: 6px;
-      display: grid; grid-template-columns: repeat(15, 1fr); gap: 3px;
-    }
-    .note-cell { display: flex; flex-direction: column; align-items: center; gap: 1px; }
-    .note-cell .idx { font-size: .58em; color: #333; }
-    .note-cell input {
-      width: 100%; background: var(--bg); color: var(--accent); border: 1px solid #2a2a3a;
-      text-align: center; font-family: monospace; font-size: .68em; padding: 3px 1px; border-radius: 2px;
-    }
-    .note-cell input:focus { border-color: var(--accent); outline: none; }
     #status { font-size: .7em; color: #888; text-align: center; }
     body { touch-action: manipulation; user-select: none; }
-    @media (max-width: 500px) {
-      button { padding: 9px 12px; font-size: .9em; }
-      .note-grid { grid-template-columns: repeat(5, 1fr); }
-      #note-big { font-size: 1.2em; }
-    }
   </style>
 </head>
 <body>
@@ -87,45 +56,14 @@
 
   <div class="panel">
     <button id="btn-start">▶ START</button>
-    <label><span>Gamme</span>
-      <select id="sel-scale">
-        <option value="M">Majeur</option>
-        <option value="mh">min. harm.</option>
-        <option value="Penta">Pentatonique</option>
-        <option value="Myx">Mixolydien</option>
-        <option value="Dor">Dorien</option>
-      </select>
-    </label>
-    <label><span>Fond.</span>
-      <select id="sel-root">
-        <option value="60">DO4</option><option value="62">RÉ4</option>
-        <option value="64">MI4</option><option value="65">FA4</option>
-        <option value="67">SOL4</option><option value="69">LA4</option>
-        <option value="71">SI4</option><option value="72">DO5</option>
-      </select>
-    </label>
     <label><span>Gain H</span>
       <input id="num-gainh" type="number" min="1" max="50" step="1" value="10">
     </label>
-    <label><span>Gain V</span>
-      <input id="num-gainv" type="number" min="1" max="50" step="1" value="10">
-    </label>
-    <label><span>Vol</span>
-      <input id="rng-vol" type="range" min="0" max="1" step="0.01" value="0.7">
-    </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
-    <label style="display:flex;align-items:center;gap:4px"><input id="chk-dbg" type="checkbox"><span>Debug</span></label>
+    <label style="display:flex;align-items:center;gap:4px">
+      <input id="chk-dbg" type="checkbox"><span>Debug</span>
+    </label>
     <button id="btn-fs">⛶ Plein écran</button>
-    <div id="note-big">—</div>
-    <button id="btn-edit" style="margin-left:auto">NOTES ▾</button>
-  </div>
-
-  <div id="note-editor">
-    <div class="note-editor-hdr">
-      <span>Notes — nom FR (ex: LA4) ou numéro MIDI</span>
-      <button id="btn-regen">↺ Regénérer</button>
-    </div>
-    <div class="note-grid" id="note-grid"></div>
   </div>
 
   <div id="status">Chargement MediaPipe…</div>
@@ -133,160 +71,32 @@
 <script type="module">
 (async () => {
 
-// ── GAMMES ───────────────────────────────────────────────────────────────────
-const SCALES = {
-  M:     [0,2,4,5,7,9,11],
-  mh:    [0,2,3,5,7,8,11],
-  Penta: [0,2,4,7,9],
-  Myx:   [0,2,4,5,7,9,10],
-  Dor:   [0,2,3,5,7,9,10]
-};
-const FR = ['DO','DO#','RÉ','RÉ#','MI','FA','FA#','SOL','SOL#','LA','LA#','SI'];
-function midiToName(m) {
-  if (m < 0 || m > 127) return '?';
-  return FR[m % 12] + (Math.floor(m / 12) - 1);
-}
-function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
-
-const DEGREE_COLORS = ['#e23b3b','#9a5a2b','#36a050','#f48cb6','#3e6fe9','#ebc828','#17171f'];
-const PC_DEGREE = [0,1,1,2,2,3,3,4,5,5,6,6];
-function colorOf(midi) {
-  const root = parseInt(selRoot.value) || 60;
-  const pc = (((midi - root) % 12) + 12) % 12;
-  return DEGREE_COLORS[PC_DEGREE[pc]];
-}
-function genNotes(root, mode, n = 15) {
-  const ivs = SCALES[mode]; const out = []; let oct = 0, i = 0;
-  while (out.length < n) {
-    const note = root + oct * 12 + ivs[i % ivs.length];
-    if (note <= 127) out.push(note);
-    if (++i % ivs.length === 0) oct++;
-    if (oct > 6) break;
-  }
-  return out;
-}
-function parseFR(s) {
-  const n = parseInt(s);
-  if (!isNaN(n) && n >= 0 && n <= 127) return n;
-  const up = s.trim().toUpperCase();
-  const map = [
-    ['SOL#',8],['DO#',1],['RÉ#',3],['RE#',3],['FA#',6],['LA#',10],
-    ['SOL',7],['DO',0],['RÉ',2],['RE',2],['MI',4],['FA',5],['LA',9],['SI',11]
-  ];
-  for (const [nm, st] of map) {
-    if (up.startsWith(nm)) {
-      const oct = parseInt(up.slice(nm.length));
-      if (!isNaN(oct) && oct >= -1 && oct <= 9) return (oct + 1) * 12 + st;
-    }
-  }
-  return null;
-}
-
 // ── STATE ─────────────────────────────────────────────────────────────────────
-let notes     = genNotes(60, 'M', SCALES.M.length);
-let running   = false;
-let activeIdx = -1;
-let activeVol = 0;
-let lastGaze  = { h: 0, v: 0 };  // regard lissé (repère 3D visage)
-let centerH   = 0;                // zéro de référence (bouton Centrer)
-let centerV   = 0;
-let gainH     = 10;
-let gainV     = 10;
-let showDbg   = false;            // affichage valeurs brutes h/v
-let faceBB    = { cx: 0.5, cy: 0.5, hw: 0.30 }; // bounding box visage lissée (coords normalisées vidéo)
-let lastCrop  = { sx: 0, sy: 0, sw: 1, sh: 1 };  // crop courant pour la conversion debug
-let lastT     = -1;
+let running  = false;
+let lastGaze = { h: 0, v: 0 };
+let centerH  = 0;
+let gainH    = 10;
+let showDbg  = false;
+let faceBB   = { cx: 0.5, cy: 0.5, hw: 0.30 };
+let lastCrop = { sx: 0, sy: 0, sw: 1, sh: 1 };
+let lastT    = -1;
 let animFrame = null;
 let currentStream = null;
-
-// ── ÉDITEUR DE NOTES ──────────────────────────────────────────────────────────
-const noteGrid = document.getElementById('note-grid');
-const noteInputs = [];
-function buildNoteGrid() {
-  noteGrid.innerHTML = ''; noteInputs.length = 0;
-  notes.forEach((midi, i) => {
-    const cell = document.createElement('div'); cell.className = 'note-cell';
-    const idx = document.createElement('div'); idx.className = 'idx'; idx.textContent = i + 1;
-    const inp = document.createElement('input'); inp.type = 'text'; inp.value = midiToName(midi);
-    inp.addEventListener('change', () => {
-      const v = parseFR(inp.value);
-      if (v !== null) { notes[i] = v; inp.value = midiToName(v); }
-      else inp.value = midiToName(notes[i]);
-    });
-    noteInputs.push(inp);
-    cell.appendChild(idx); cell.appendChild(inp); noteGrid.appendChild(cell);
-  });
-}
-buildNoteGrid();
-
-const selScale = document.getElementById('sel-scale');
-const selRoot  = document.getElementById('sel-root');
-function regenFromScale() {
-  notes = genNotes(parseInt(selRoot.value), selScale.value, SCALES[selScale.value].length);
-  buildNoteGrid();
-}
-document.getElementById('btn-edit').addEventListener('click', () =>
-  document.getElementById('note-editor').classList.toggle('open'));
-document.getElementById('btn-regen').addEventListener('click', regenFromScale);
-selScale.addEventListener('change', regenFromScale);
-selRoot.addEventListener('change', regenFromScale);
+let cursorFx = 0.5; // position horizontale courante du curseur (0–1)
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
 const numGainH = document.getElementById('num-gainh');
-const numGainV = document.getElementById('num-gainv');
-numGainH.addEventListener('change', () => { gainH = Math.max(0.5, parseFloat(numGainH.value) || 3); numGainH.value = gainH; });
-numGainV.addEventListener('change', () => { gainV = Math.max(0.5, parseFloat(numGainV.value) || 3); numGainV.value = gainV; });
-
-// ── AUDIO ──────────────────────────────────────────────────────────────────────
-let audioCtx, osc, vibratoOsc, filter, envGain, masterGain, audioReady = false;
-function makeReverb(ctx) {
-  const conv = ctx.createConvolver(), sr = ctx.sampleRate, len = sr * 2;
-  const buf = ctx.createBuffer(2, len, sr);
-  for (let c = 0; c < 2; c++) {
-    const d = buf.getChannelData(c);
-    for (let i = 0; i < len; i++) d[i] = (Math.random()*2-1) * Math.pow(1-i/len, 2);
-  }
-  conv.buffer = buf; return conv;
-}
-async function initAudio() {
-  if (audioReady) return; audioReady = true;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  await audioCtx.resume();
-  osc = audioCtx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = 261.63;
-  vibratoOsc = audioCtx.createOscillator(); vibratoOsc.frequency.value = 5.2;
-  const vg = audioCtx.createGain(); vg.gain.value = 5;
-  vibratoOsc.connect(vg); vg.connect(osc.frequency); vibratoOsc.start();
-  filter = audioCtx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 900; filter.Q.value = 2.5;
-  envGain = audioCtx.createGain(); envGain.gain.value = 0;
-  masterGain = audioCtx.createGain(); masterGain.gain.value = parseFloat(document.getElementById('rng-vol').value);
-  const reverb = makeReverb(audioCtx), reverbGain = audioCtx.createGain(); reverbGain.gain.value = 0.28;
-  osc.connect(filter); filter.connect(envGain);
-  envGain.connect(masterGain); envGain.connect(reverb); reverb.connect(reverbGain); reverbGain.connect(masterGain);
-  masterGain.connect(audioCtx.destination); osc.start();
-}
-document.getElementById('rng-vol').addEventListener('input', e => {
-  if (masterGain) masterGain.gain.setTargetAtTime(+e.target.value, audioCtx.currentTime, 0.05);
+numGainH.addEventListener('change', () => {
+  gainH = Math.max(0.5, parseFloat(numGainH.value) || 10);
+  numGainH.value = gainH;
 });
-function playNote(idx, vol) {
-  if (!audioCtx || !running) return;
-  if (audioCtx.state !== 'running') audioCtx.resume();
-  if (idx >= 0 && vol > 0.02) {
-    osc.frequency.setTargetAtTime(midiToFreq(notes[idx]), audioCtx.currentTime, 0.03);
-    filter.frequency.setTargetAtTime(500 + vol*2000, audioCtx.currentTime, 0.03);
-    envGain.gain.setTargetAtTime(vol*0.7, audioCtx.currentTime, 0.012);
-    activeIdx = idx; activeVol = vol;
-  } else {
-    envGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.07);
-    activeIdx = -1; activeVol = 0;
-  }
-}
 
-// ── CANVAS ─────────────────────────────────────────────────────────────────────
+// ── CANVAS ────────────────────────────────────────────────────────────────────
 const video   = document.getElementById('videoel');
 const overlay = document.getElementById('overlay');
 const ctx2d   = overlay.getContext('2d');
 
-// ── MEDIAPIPE ──────────────────────────────────────────────────────────────────
+// ── MEDIAPIPE ─────────────────────────────────────────────────────────────────
 const vision = await import(
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/vision_bundle.mjs'
 );
@@ -307,51 +117,41 @@ const hl = await FaceLandmarker.createFromOptions(fs, {
 document.getElementById('status').textContent =
   'Prêt — ▶ START puis ◎ Centrer en regardant droit devant';
 
-// ── REGARD : repère 3D visage + détection iris par pixels ─────────────────────
-// Pipeline :
-//  1. Repère 3D visage (r/u/f) depuis les landmarks MediaPipe → compensation pose de tête
-//  2. Crop de l'œil extrait de la vidéo PLEINE RÉSOLUTION → zoom logiciel
-//  3. Centroïde des pixels sombres dans ce crop → position iris à la précision pixel
-//  4. Projection du décalage iris-orbite sur (r, u) → h/v indépendants de la pose
+// ── REGARD : repère 3D visage + détection iris par pixels ────────────────────
+// 1. Repère 3D (r/u/f) depuis landmarks stables → compensation pose de tête
+// 2. Crop zoomé centré sur le landmark iris MediaPipe → voisinage étroit
+// 3. Centroïde des pixels sombres → position iris à la précision pixel
+// 4. Projection du décalage iris-orbite sur (r, u) → h indépendant de la pose
 
-// Canvas caché pour les crops d'œil (willReadFrequently car on lit getImageData à chaque frame)
 const eyeCnv = document.createElement('canvas');
 eyeCnv.width = 120; eyeCnv.height = 50;
 const eyeCtxOff = eyeCnv.getContext('2d', { willReadFrequently: true });
 
 let dbgH = 0, dbgV = 0;
-let dbgIris1 = null, dbgIris2 = null; // dernières positions iris détectées (debug)
+let dbgIris1 = null, dbgIris2 = null;
 
-// Affine la position de l'iris par centroïde de pixels sombres.
-// Le crop est centré sur le landmark MediaPipe de l'iris (irisIdx) → ±35% de la largeur d'œil.
-// Cela évite que les coins sombres de l'œil ou les reflets de lunettes parasitent le centroïde.
 function irisPixel(lm, c1, c2, irisIdx) {
   const vW = video.videoWidth || 640, vH = video.videoHeight || 480;
-
-  // Largeur de l'œil pour calibrer la taille du crop
   const eyeW = Math.abs(lm[c1].x - lm[c2].x) * vW;
   if (eyeW < 4) return null;
 
-  // Crop carré centré sur l'iris MediaPipe — rayon = 40 % de la largeur d'œil
   const r   = eyeW * 0.40;
   const iCx = lm[irisIdx].x * vW;
   const iCy = lm[irisIdx].y * vH;
-  const bx  = Math.max(0, iCx - r),         by = Math.max(0, iCy - r * 0.85);
-  const bw  = Math.min(vW - bx, r * 2),     bh = Math.min(vH - by, r * 1.7);
+  const bx  = Math.max(0, iCx - r),     by = Math.max(0, iCy - r * 0.85);
+  const bw  = Math.min(vW - bx, r * 2), bh = Math.min(vH - by, r * 1.7);
   if (bw < 4 || bh < 4) return null;
 
   try { eyeCtxOff.drawImage(video, bx, by, bw, bh, 0, 0, 120, 50); }
   catch { return null; }
   const d = eyeCtxOff.getImageData(0, 0, 120, 50).data;
 
-  // Passe 1 : seuil adaptatif basé sur la luminance minimale (= pupille)
   let minLum = 255;
   for (let i = 0; i < d.length; i += 4)
     minLum = Math.min(minLum, 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]);
-  if (minLum > 160) return null; // crop trop clair → œil fermé ou hors cadre
+  if (minLum > 160) return null;
   const thr = Math.min(130, minLum + 55);
 
-  // Passe 2 : centroïde pondéré par (thr − lum)²
   let sx = 0, sy = 0, tot = 0;
   for (let y = 2; y < 48; y++) {
     for (let x = 2; x < 118; x++) {
@@ -383,7 +183,6 @@ function gazeFromLandmarks(lm) {
   const len   = a => Math.hypot(a.x, a.y, a.z) || 1e-6;
   const norm  = a => { const l = len(a); return { x:a.x/l, y:a.y/l, z:a.z/l }; };
 
-  // ① Repère 3D du visage
   let r = sub(P(263), P(33));
   const vDown = sub(P(152), P(168));
   let f = cross(r, vDown);
@@ -392,23 +191,18 @@ function gazeFromLandmarks(lm) {
   if (r.x < 0) { r.x*=-1; r.y*=-1; r.z*=-1; }
   if (u.y < 0) { u.x*=-1; u.y*=-1; u.z*=-1; }
 
-  // ② Clignement (EAR en 2D brut — P() applique asp sur y et réduit les hauteurs)
   const earW1 = Math.abs(lm[133].x - lm[33].x),  earW2 = Math.abs(lm[263].x - lm[362].x);
   const earH1 = Math.abs(lm[159].y - lm[145].y),  earH2 = Math.abs(lm[386].y - lm[374].y);
   if (earW1 < 0.005 || earW2 < 0.005) return null;
-  if (earH1/earW1 < 0.04 && earH2/earW2 < 0.04) return null; // yeux fermés
-  // eW1/eW2 restent en espace 3D corrigé pour la normalisation en ④
+  if (earH1/earW1 < 0.04 && earH2/earW2 < 0.04) return null;
   const eW1 = len(sub(P(133), P(33))),  eW2 = len(sub(P(263), P(362)));
 
-  // ③ Position iris par centroïde de pixels sombres (pleine résolution caméra)
-  // Fallback sur landmark MediaPipe si le centroïde échoue
-  const iris1 = irisPixel(lm, 33,  133,  468) ?? { x: lm[468].x, y: lm[468].y, z: lm[468].z };
-  const iris2 = irisPixel(lm, 362, 263,  473) ?? { x: lm[473].x, y: lm[473].y, z: lm[473].z };
+  const iris1 = irisPixel(lm, 33,  133, 468) ?? { x: lm[468].x, y: lm[468].y, z: lm[468].z };
+  const iris2 = irisPixel(lm, 362, 263, 473) ?? { x: lm[473].x, y: lm[473].y, z: lm[473].z };
 
   const I1 = { x: iris1.x, y: iris1.y * asp, z: iris1.z };
   const I2 = { x: iris2.x, y: iris2.y * asp, z: iris2.z };
 
-  // ④ Décalage iris ↔ centre orbite, projeté sur le repère 3D du visage
   const o1 = sub(I1, mid(P(33),  P(133)));
   const o2 = sub(I2, mid(P(362), P(263)));
   const h  = (dot(o1, r)/eW1 + dot(o2, r)/eW2) / 2;
@@ -419,154 +213,91 @@ function gazeFromLandmarks(lm) {
   return { h, v };
 }
 
-// ── RENDU ──────────────────────────────────────────────────────────────────────
+// ── RENDU ─────────────────────────────────────────────────────────────────────
 function drawFrame(res) {
-  const W = overlay.width, H = overlay.height, N = notes.length;
-  const k = Math.min(W,H) / 480;
-  const cxC = W/2, cyC = H/2;
-  const sw = (Math.PI*2) / N;
-  const rSilent = Math.min(W,H) * 0.28;
-  const radAt = (f, a) => {
-    const d = Math.max(Math.abs(Math.sin(a))/cxC, Math.abs(Math.cos(a))/cyC);
-    return f / (d || 1e-6);
-  };
+  const W = overlay.width, H = overlay.height;
+  const k = Math.min(W, H) / 480;
 
   ctx2d.clearRect(0, 0, W, H);
 
-  // Zoom centré sur le milieu des yeux (pont du nez) à chaque frame
+  // Zoom centré sur le milieu des yeux
   if (res.faceLandmarks?.length) {
     const lmZ = res.faceLandmarks[0];
-    // Centre = milieu des deux coins internes (lm[133] gauche, lm[362] droit)
     const tcx = (lmZ[133].x + lmZ[362].x) / 2;
     const tcy = (lmZ[133].y + lmZ[362].y) / 2;
-    // Largeur = distance coins externes (lm[33] → lm[263]) × 1.2
     const thw = Math.abs(lmZ[263].x - lmZ[33].x) / 2 * 1.2;
     faceBB.cx += (tcx - faceBB.cx) * 0.08;
     faceBB.cy += (tcy - faceBB.cy) * 0.08;
     faceBB.hw += (thw - faceBB.hw) * 0.08;
   }
 
-  // Fond caméra zoomé sur le visage
+  // Fond caméra zoomé
   if (video.readyState >= 2) {
     const vW = video.videoWidth || 640, vH = video.videoHeight || 480;
     const hw = faceBB.hw;
-    const hh = hw * (vW / vH) * (H / W); // demi-hauteur pour garder l'aspect ratio du canvas
+    const hh = hw * (vW / vH) * (H / W);
     const x0 = Math.max(0, faceBB.cx - hw), x1 = Math.min(1, faceBB.cx + hw);
     const y0 = Math.max(0, faceBB.cy - hh), y1 = Math.min(1, faceBB.cy + hh);
     lastCrop = { sx: x0, sy: y0, sw: x1 - x0, sh: y1 - y0 };
     ctx2d.drawImage(video, x0*vW, y0*vH, (x1-x0)*vW, (y1-y0)*vH, 0, 0, W, H);
   }
 
-  let cursor = null, haveFace = false;
-
+  // Calcul du regard → position horizontale du curseur
   if (res.faceLandmarks?.length) {
     const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
     if (gaze) {
-      haveFace = true;
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
-      lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
-
-      // h > 0 = regard gauche → curseur gauche (fx < 0.5)
-      let fx = Math.max(0, Math.min(1, 0.5 - (lastGaze.h - centerH) * gainH));
-      let fy = Math.max(0, Math.min(1, 0.5 + (lastGaze.v - centerV) * gainV));
-
-      const px = fx * W, py = fy * H;
-      const dx = px - cxC, dy = py - cyC;
-      const dist = Math.hypot(dx, dy);
-
-      if (dist <= rSilent) {
-        playNote(-1, 0);
-        document.getElementById('note-big').textContent = '—';
-        cursor = { px, py, idx: -1, dist };
-      } else {
-        let a = Math.atan2(dx, -dy); if (a < 0) a += Math.PI*2;
-        const idx  = Math.round(a / sw) % N;
-        const edge = radAt(1, a);
-        const vol  = Math.max(0, Math.min(1, (dist - rSilent) / (edge - rSilent)));
-        playNote(idx, vol);
-        document.getElementById('note-big').textContent = midiToName(notes[idx]);
-        cursor = { px, py, idx, dist };
-      }
+      cursorFx = Math.max(0, Math.min(1, 0.5 - (lastGaze.h - centerH) * gainH));
     }
   }
-  if (!haveFace && running) { playNote(-1, 0); document.getElementById('note-big').textContent = '—'; }
 
-  // Tuiles (semi-transparentes pour voir la caméra en fond)
-  ctx2d.globalAlpha = 0.52;
-  for (let i = 0; i < N; i++) {
-    const aC = i*sw, b0 = aC-sw/2, b1 = aC+sw/2, edge = radAt(1, aC);
-    const p1x = cxC + rSilent*Math.sin(b0), p1y = cyC - rSilent*Math.cos(b0);
-    const p2x = cxC + rSilent*Math.sin(b1), p2y = cyC - rSilent*Math.cos(b1);
-    const p3x = cxC + edge*Math.sin(aC),    p3y = cyC - edge*Math.cos(aC);
-    const active = cursor?.idx === i;
-
-    ctx2d.save();
-    ctx2d.beginPath(); ctx2d.moveTo(p1x,p1y); ctx2d.lineTo(p3x,p3y); ctx2d.lineTo(p2x,p2y);
-    ctx2d.closePath(); ctx2d.clip();
-    ctx2d.fillStyle = colorOf(notes[i]); ctx2d.fillRect(0,0,W,H);
-    if (active) {
-      ctx2d.beginPath(); ctx2d.arc(cxC, cyC, cursor.dist, 0, Math.PI*2);
-      ctx2d.fillStyle = 'rgba(0,255,130,0.55)'; ctx2d.fill();
-    }
-    ctx2d.restore();
-    ctx2d.beginPath(); ctx2d.moveTo(p1x,p1y); ctx2d.lineTo(p3x,p3y); ctx2d.lineTo(p2x,p2y);
-    ctx2d.closePath();
-    ctx2d.strokeStyle = active ? 'rgba(0,255,130,0.9)' : 'rgba(255,255,255,0.22)';
-    ctx2d.lineWidth = active ? 2.5*k : Math.max(1,k); ctx2d.stroke();
+  // Ligne horizontale centrale
+  const lineY = H / 2;
+  const lineR = Math.round(8 * k);  // rayon du "rail" demi-arrondi aux extrémités
+  ctx2d.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx2d.lineWidth = Math.max(2, 2 * k);
+  ctx2d.beginPath();
+  ctx2d.moveTo(lineR, lineY);
+  ctx2d.lineTo(W - lineR, lineY);
+  ctx2d.stroke();
+  // Marqueurs extrémités
+  for (const ex of [lineR, W - lineR]) {
+    ctx2d.beginPath(); ctx2d.arc(ex, lineY, lineR * 0.5, 0, Math.PI * 2);
+    ctx2d.fillStyle = 'rgba(255,255,255,0.2)'; ctx2d.fill();
   }
 
-  ctx2d.globalAlpha = 1;
+  // Point curseur sur la ligne
+  const cx = cursorFx * W;
+  const dotR = Math.round(12 * k);
+  ctx2d.beginPath(); ctx2d.arc(cx, lineY, dotR, 0, Math.PI * 2);
+  ctx2d.fillStyle = 'rgba(0,232,122,0.95)'; ctx2d.fill();
+  ctx2d.lineWidth = Math.max(1.5, 2 * k);
+  ctx2d.strokeStyle = 'rgba(0,0,0,0.5)'; ctx2d.stroke();
 
   // Cadre
-  ctx2d.strokeStyle = 'rgba(255,255,255,0.28)'; ctx2d.lineWidth = Math.max(2,2*k);
-  ctx2d.strokeRect(1,1,W-2,H-2);
+  ctx2d.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx2d.lineWidth = Math.max(1, k);
+  ctx2d.strokeRect(1, 1, W - 2, H - 2);
 
-  // Rond muet central (transparent — pas de fill)
-  ctx2d.beginPath(); ctx2d.arc(cxC,cyC,rSilent,0,Math.PI*2);
-  ctx2d.setLineDash([6*k,5*k]); ctx2d.strokeStyle='rgba(190,190,210,0.8)';
-  ctx2d.lineWidth = Math.max(1.5,1.5*k); ctx2d.stroke(); ctx2d.setLineDash([]);
-
-  // Labels notes
-  ctx2d.textAlign='center'; ctx2d.textBaseline='middle';
-  for (let i = 0; i < N; i++) {
-    const aC = i*sw, r = rSilent + 0.30*(radAt(1,aC)-rSilent);
-    const lx = cxC + r*Math.sin(aC), ly = cyC - r*Math.cos(aC);
-    const fz = Math.round(12*k);
-    ctx2d.font = `bold ${fz}px monospace`; ctx2d.lineJoin = 'round';
-    ctx2d.lineWidth = Math.max(2, Math.round(3.5*k));
-    ctx2d.strokeStyle = 'rgba(0,0,0,0.9)'; ctx2d.strokeText(midiToName(notes[i]),lx,ly);
-    ctx2d.fillStyle = '#fff'; ctx2d.fillText(midiToName(notes[i]),lx,ly);
-  }
-
-  // Curseur
-  if (cursor) {
-    ctx2d.beginPath(); ctx2d.arc(cursor.px, cursor.py, Math.round(10*k), 0, Math.PI*2);
-    ctx2d.fillStyle = cursor.idx < 0 ? 'rgba(150,150,160,0.9)' : 'rgba(0,255,130,0.95)';
-    ctx2d.fill(); ctx2d.lineWidth = Math.max(1.5,2*k);
-    ctx2d.strokeStyle = 'rgba(0,0,0,0.6)'; ctx2d.stroke();
-  }
-  ctx2d.textBaseline = 'alphabetic';
-
-  // Debug : croix sur les iris détectés + valeurs brutes
+  // Debug
   if (showDbg) {
-    // Croix rouges sur les iris (coords normalisées vidéo → canvas via crop zoomé)
     for (const ir of [dbgIris1, dbgIris2]) {
       if (!ir) continue;
-      const cx = (ir.x - lastCrop.sx) / lastCrop.sw * W;
-      const cy = (ir.y - lastCrop.sy) / lastCrop.sh * H;
+      const ix = (ir.x - lastCrop.sx) / lastCrop.sw * W;
+      const iy = (ir.y - lastCrop.sy) / lastCrop.sh * H;
       const r2 = 8 * k;
       ctx2d.strokeStyle = '#ff2222'; ctx2d.lineWidth = 2 * k;
-      ctx2d.beginPath(); ctx2d.moveTo(cx-r2,cy); ctx2d.lineTo(cx+r2,cy); ctx2d.stroke();
-      ctx2d.beginPath(); ctx2d.moveTo(cx,cy-r2); ctx2d.lineTo(cx,cy+r2); ctx2d.stroke();
-      ctx2d.beginPath(); ctx2d.arc(cx, cy, r2*0.6, 0, Math.PI*2);
+      ctx2d.beginPath(); ctx2d.moveTo(ix-r2,iy); ctx2d.lineTo(ix+r2,iy); ctx2d.stroke();
+      ctx2d.beginPath(); ctx2d.moveTo(ix,iy-r2); ctx2d.lineTo(ix,iy+r2); ctx2d.stroke();
+      ctx2d.beginPath(); ctx2d.arc(ix, iy, r2*0.6, 0, Math.PI*2);
       ctx2d.strokeStyle = 'rgba(255,255,0,0.9)'; ctx2d.stroke();
     }
     ctx2d.font = `${Math.round(11*k)}px monospace`;
     ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
     ctx2d.fillStyle = 'rgba(0,255,130,0.95)';
-    ctx2d.fillText(`h ${dbgH.toFixed(3)}  v ${dbgV.toFixed(3)}`, 8*k, 8*k);
-    ctx2d.fillText(`centre  h ${centerH.toFixed(3)}  v ${centerV.toFixed(3)}`, 8*k, 22*k);
-    ctx2d.fillText(`iris  ${dbgIris1 ? 'G✓' : 'G✗'}  ${dbgIris2 ? 'D✓' : 'D✗'}`, 8*k, 36*k);
+    ctx2d.fillText(`h ${dbgH.toFixed(3)}`, 8*k, 8*k);
+    ctx2d.fillText(`centre h ${centerH.toFixed(3)}`, 8*k, 22*k);
+    ctx2d.fillText(`iris ${dbgIris1 ? 'G✓' : 'G✗'}  ${dbgIris2 ? 'D✓' : 'D✗'}`, 8*k, 36*k);
     ctx2d.textAlign = 'start'; ctx2d.textBaseline = 'alphabetic';
   }
 }
@@ -580,7 +311,7 @@ function frameLoop() {
   animFrame = requestAnimationFrame(frameLoop);
 }
 
-// ── CAMÉRA ─────────────────────────────────────────────────────────────────────
+// ── CAMÉRA ────────────────────────────────────────────────────────────────────
 async function startCamera() {
   if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
   currentStream = await navigator.mediaDevices.getUserMedia({
@@ -590,11 +321,10 @@ async function startCamera() {
   await video.play();
 }
 
-// ── START / STOP ───────────────────────────────────────────────────────────────
+// ── START / STOP ──────────────────────────────────────────────────────────────
 const btnStart = document.getElementById('btn-start');
 btnStart.addEventListener('click', async () => {
   if (!running) {
-    await initAudio();
     await startCamera();
     running = true; lastT = -1;
     frameLoop();
@@ -602,26 +332,24 @@ btnStart.addEventListener('click', async () => {
     document.getElementById('status').textContent =
       'Actif — regarde droit devant et clique ◎ Centrer';
   } else {
-    playNote(-1, 0); running = false;
+    running = false;
     cancelAnimationFrame(animFrame); animFrame = null;
     if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
     video.srcObject = null;
     btnStart.textContent = '▶ START'; btnStart.classList.remove('on');
     ctx2d.clearRect(0, 0, overlay.width, overlay.height);
-    document.getElementById('note-big').textContent = '—';
     document.getElementById('status').textContent = 'Arrêté';
   }
 });
 
-// ── CENTRER ────────────────────────────────────────────────────────────────────
+// ── CENTRER ───────────────────────────────────────────────────────────────────
 document.getElementById('btn-ctr').addEventListener('click', () => {
   centerH = lastGaze.h;
-  centerV = lastGaze.v;
   document.getElementById('status').textContent =
-    `Centré ✓  (h=${centerH.toFixed(3)} v=${centerV.toFixed(3)})`;
+    `Centré ✓  (h=${centerH.toFixed(3)})`;
 });
 
-// ── REDIMENSIONNEMENT / PLEIN ÉCRAN ────────────────────────────────────────────
+// ── REDIMENSIONNEMENT / PLEIN ÉCRAN ───────────────────────────────────────────
 const videoWrap = document.getElementById('video-wrap');
 function resizeCanvas() {
   const r = overlay.getBoundingClientRect();
