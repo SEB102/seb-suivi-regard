@@ -68,11 +68,11 @@
     <label><span>Gain H</span>
       <input id="num-gainh" type="number" min="1" max="100" step="1" value="30">
     </label>
-    <label><span>Lissage <b id="smooth-v">0.31</b></span>
-      <input id="num-smooth" type="range" min="0" max="1" step="0.01" value="0.31">
+    <label><span>Vitesse <b id="smooth-v">0.70</b></span>
+      <input id="num-smooth" type="range" min="0" max="1" step="0.01" value="0.7">
     </label>
     <label style="display:flex;align-items:center;gap:4px">
-      <input id="chk-inv" type="checkbox" checked><span>Inv H</span>
+      <input id="chk-inv" type="checkbox" checked><span>Inverser</span>
     </label>
     <label><span>Seuil V</span>
       <input id="num-thresh" type="number" min="1" max="90" step="1" value="12">
@@ -103,7 +103,9 @@ let animFrame = null;
 let currentStream = null;
 let cursorFx   = 0.5;
 let cursorFy   = 0.5;
-let smoothing  = Math.pow(10, -4 * 0.31);   // fader 0..1 → coefficient : 0 = aucun lissage, 0.5 = 0.01 (ancien minimum), 1 = très lissé
+// Vitesse 0..1 → lissage 0.8..0.1 (plus la vitesse est grande, moins il y a de lissage) → coefficient 10^(-4·lissage)
+const smoothFromSpeed = v => Math.pow(10, -4 * (0.8 - 0.7 * v));
+let smoothing  = smoothFromSpeed(0.7);
 let invertH    = true;
 let centerV    = 0;
 let vertThresh = 0.12;   // seuil sur l'écart (bas − haut) des blendshapes, après centrage
@@ -123,9 +125,9 @@ numGainH.addEventListener('change', () => {
   numGainH.value = gainH;
 });
 numSmooth.addEventListener('input', () => {
-  const f = Math.max(0, Math.min(1, parseFloat(numSmooth.value) || 0));
-  smoothing = Math.pow(10, -4 * f);          // échelle logarithmique : 0 → 1 (immédiat), 0.5 → 0.01, 1 → 0.0001
-  document.getElementById('smooth-v').textContent = f.toFixed(2);
+  const v = Math.max(0, Math.min(1, parseFloat(numSmooth.value) || 0));
+  smoothing = smoothFromSpeed(v);
+  document.getElementById('smooth-v').textContent = v.toFixed(2);
 });
 const numThresh = document.getElementById('num-thresh');
 numThresh.addEventListener('change', () => {
@@ -351,7 +353,7 @@ function drawFrame(res) {
             `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
         }
       }
-      const dv = lastV - centerV;
+      const dv = (invertH ? -1 : 1) * (lastV - centerV);   // « Inverser » : vertical inversé aussi
       if (dv >  vertThresh) vertState = 'down';
       else if (dv < -vertThresh) vertState = 'up';
       cursorFy = vertState === 'up' ? 0.25 : 0.75;
