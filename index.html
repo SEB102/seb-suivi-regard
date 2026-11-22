@@ -74,7 +74,7 @@
       <input id="chk-inv" type="checkbox" checked><span>Inv H</span>
     </label>
     <label><span>Seuil V</span>
-      <input id="num-thresh" type="number" min="0.5" max="20" step="0.5" value="2">
+      <input id="num-thresh" type="number" min="1" max="90" step="1" value="12">
     </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
     <button id="btn-video" title="Afficher/masquer l'image de la caméra">🖼 PAS D'IMAGE</button>
@@ -105,7 +105,8 @@ let cursorFy   = 0.5;
 let smoothing  = 0.06;
 let invertH    = true;
 let centerV    = 0;
-let vertThresh = 0.02;
+let vertThresh = 0.12;   // seuil sur l'écart (bas − haut) des blendshapes, après centrage
+let lastV      = 0;      // haut/bas lissé (blendshapes)
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
 let showVideo  = true;
 let centering  = null;            // mesure du regard au repos en cours (mire affichée)
@@ -127,8 +128,8 @@ numSmooth.addEventListener('change', () => {
 const numThresh = document.getElementById('num-thresh');
 numThresh.addEventListener('change', () => {
   const raw = parseFloat(numThresh.value) / 100;
-  vertThresh = Math.max(0.005, Math.min(0.2, isNaN(raw) ? 0.02 : raw));
-  numThresh.value = (vertThresh * 100).toFixed(1);
+  vertThresh = Math.max(0.01, Math.min(0.9, isNaN(raw) ? 0.12 : raw));
+  numThresh.value = Math.round(vertThresh * 100);
 });
 
 // ── CANVAS ────────────────────────────────────────────────────────────────────
@@ -156,7 +157,7 @@ const hl = await _creerAvecRepli(FaceLandmarker, fs, {
   },
   runningMode: 'VIDEO',
   numFaces: 1,
-  outputFaceBlendshapes: false
+  outputFaceBlendshapes: true
 });
 
 document.getElementById('status').textContent = 'Prêt';
@@ -257,6 +258,13 @@ function gazeFromLandmarks(lm) {
   return { h, v };
 }
 
+// ── HAUT / BAS depuis les blendshapes du modèle (positif = regard vers le bas) ──
+function verticalFromBlendshapes(get) {
+  const down = (get('eyeLookDownLeft') + get('eyeLookDownRight')) / 2;
+  const up   = (get('eyeLookUpLeft')   + get('eyeLookUpRight'))   / 2;
+  return down - up;
+}
+
 // ── MIRE DE CENTRAGE : regardez le point rouge ──────────────────────────────
 function drawMire(W, H, k) {
   const x = W / 2, y = H / 2;
@@ -325,12 +333,15 @@ function drawFrame(res) {
   if (res.faceLandmarks?.length) {
     const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
     gazeOk = !!gaze;
+    const cats = res.faceBlendshapes?.[0]?.categories;
+    const vb = cats ? verticalFromBlendshapes(n => cats.find(c => c.categoryName === n)?.score ?? 0) : null;
     if (gaze) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
       lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
+      if (vb !== null) lastV += (vb - lastV) * 0.3;
       // Centrage : moyenne du regard au repos sur CENTER_FRAMES images (valeurs brutes)
       if (centering) {
-        centering.n++; centering.sh += gaze.h; centering.sv += gaze.v;
+        centering.n++; centering.sh += gaze.h; centering.sv += (vb ?? 0);
         if (centering.n >= CENTER_FRAMES) {
           centerH = centering.sh / centering.n; centerV = centering.sv / centering.n;
           centering = null;
@@ -338,7 +349,7 @@ function drawFrame(res) {
             `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
         }
       }
-      const dv = lastGaze.v - centerV;
+      const dv = lastV - centerV;
       if (dv >  vertThresh) vertState = 'down';
       else if (dv < -vertThresh) vertState = 'up';
       cursorFy = vertState === 'up' ? 0.25 : 0.75;
@@ -399,7 +410,7 @@ function drawFrame(res) {
     ctx2d.font = `${Math.round(11*k)}px monospace`;
     ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
     ctx2d.fillStyle = 'rgba(0,255,130,0.95)';
-    ctx2d.fillText(`h ${dbgH.toFixed(3)}  v ${dbgV.toFixed(3)}`, 8*k, 8*k);
+    ctx2d.fillText(`h ${dbgH.toFixed(3)}  haut/bas ${lastV.toFixed(3)} (blendshapes)`, 8*k, 8*k);
     ctx2d.fillText(`ctr h ${centerH.toFixed(3)}  v ${centerV.toFixed(3)}`, 8*k, 22*k);
     ctx2d.fillText(`vert: ${vertState}  iris ${dbgIris1 ? 'G✓' : 'G✗'} ${dbgIris2 ? 'D✓' : 'D✗'}`, 8*k, 36*k);
     ctx2d.textAlign = 'start'; ctx2d.textBaseline = 'alphabetic';
