@@ -113,7 +113,7 @@ let lastV      = 0;      // haut/bas lissé (blendshapes)
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
 let showVideo  = false;   // image caméra masquée par défaut
 let centering  = null;            // mesure du regard au repos en cours (mire affichée)
-const CENTER_FRAMES = 135;        // ≈ 4,5 s
+const CENTER_FRAMES = 300;        // ≈ 10 s à 30 images/s
 let faceSeen = false, gazeOk = false;
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
