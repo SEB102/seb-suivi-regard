@@ -44,6 +44,7 @@
     button.on { background: var(--accent); color: #000; font-weight: bold; }
     label { display: flex; align-items: center; gap: 5px; font-size: .78em; color: #555; }
     label span { color: var(--text); }
+    input[type=range] { width: 90px; accent-color: var(--accent); }
     input[type=number] {
       width: 52px; background: var(--bg); color: var(--accent);
       border: 1px solid #2a2a3a; padding: 3px 4px;
@@ -67,8 +68,8 @@
     <label><span>Gain H</span>
       <input id="num-gainh" type="number" min="1" max="100" step="1" value="30">
     </label>
-    <label><span>Lissage</span>
-      <input id="num-smooth" type="number" min="0.01" max="0.99" step="0.01" value="0.06">
+    <label><span>Lissage <b id="smooth-v">0.31</b></span>
+      <input id="num-smooth" type="range" min="0" max="1" step="0.01" value="0.31">
     </label>
     <label style="display:flex;align-items:center;gap:4px">
       <input id="chk-inv" type="checkbox" checked><span>Inv H</span>
@@ -102,13 +103,13 @@ let animFrame = null;
 let currentStream = null;
 let cursorFx   = 0.5;
 let cursorFy   = 0.5;
-let smoothing  = 0.06;
+let smoothing  = Math.pow(10, -4 * 0.31);   // fader 0..1 → coefficient : 0 = aucun lissage, 0.5 = 0.01 (ancien minimum), 1 = très lissé
 let invertH    = true;
 let centerV    = 0;
 let vertThresh = 0.12;   // seuil sur l'écart (bas − haut) des blendshapes, après centrage
 let lastV      = 0;      // haut/bas lissé (blendshapes)
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
-let showVideo  = true;
+let showVideo  = false;   // image caméra masquée par défaut
 let centering  = null;            // mesure du regard au repos en cours (mire affichée)
 const CENTER_FRAMES = 45;         // ≈ 1,5 s
 let faceSeen = false, gazeOk = false;
@@ -121,9 +122,10 @@ numGainH.addEventListener('change', () => {
   gainH = Math.max(0.5, parseFloat(numGainH.value) || 10);
   numGainH.value = gainH;
 });
-numSmooth.addEventListener('change', () => {
-  smoothing = Math.max(0.01, Math.min(0.99, parseFloat(numSmooth.value) || 0.06));
-  numSmooth.value = smoothing;
+numSmooth.addEventListener('input', () => {
+  const f = Math.max(0, Math.min(1, parseFloat(numSmooth.value) || 0));
+  smoothing = Math.pow(10, -4 * f);          // échelle logarithmique : 0 → 1 (immédiat), 0.5 → 0.01, 1 → 0.0001
+  document.getElementById('smooth-v').textContent = f.toFixed(2);
 });
 const numThresh = document.getElementById('num-thresh');
 numThresh.addEventListener('change', () => {
@@ -481,6 +483,7 @@ document.getElementById('btn-ctr-fs').addEventListener('click', startCentering);
 
 // ── IMAGE CAMÉRA ──────────────────────────────────────────────────────────────
 const btnVideo = document.getElementById('btn-video');
+btnVideo.classList.toggle('on', !showVideo);      // état initial : image masquée
 btnVideo.addEventListener('click', () => {
   showVideo = !showVideo;
   btnVideo.classList.toggle('on', !showVideo);
