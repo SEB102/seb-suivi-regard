@@ -281,10 +281,16 @@ function gazeFromLandmarks(lm) {
 function pitchFromMatrix(d) { return Math.atan2(d[6], d[10]) * 180 / Math.PI; }
 
 // ── HAUT / BAS depuis les blendshapes du modèle (positif = regard vers le bas) ──
+// Deux signaux additionnés : le regard (eyeLookDown − eyeLookUp) et l'ouverture des paupières :
+// paupières qui se baissent (eyeBlink) = bas, paupières plus ouvertes (eyeWide) = haut.
+const LID_WEIGHT   = 0.5;    // poids du signal paupières par rapport au regard
+const BLINK_FREEZE = 0.55;   // au-delà : vrai clignement, le haut/bas est gelé (pas de faux « bas »)
 function verticalFromBlendshapes(get) {
-  const down = (get('eyeLookDownLeft') + get('eyeLookDownRight')) / 2;
-  const up   = (get('eyeLookUpLeft')   + get('eyeLookUpRight'))   / 2;
-  return down - up;
+  const down  = (get('eyeLookDownLeft') + get('eyeLookDownRight')) / 2;
+  const up    = (get('eyeLookUpLeft')   + get('eyeLookUpRight'))   / 2;
+  const blink = (get('eyeBlinkLeft')    + get('eyeBlinkRight'))    / 2;
+  const wide  = (get('eyeWideLeft')     + get('eyeWideRight'))     / 2;
+  return { v: (down - up) + LID_WEIGHT * (blink - wide), blink };
 }
 
 // ── MIRE DE CENTRAGE : regardez le point rouge ──────────────────────────────
@@ -358,16 +364,27 @@ function drawFrame(res) {
     const cats = res.faceBlendshapes?.[0]?.categories;
     const mats = res.facialTransformationMatrixes;
     const pitch = mats && mats.length ? pitchFromMatrix(mats[0].data) : null;
-    const vb = cats ? verticalFromBlendshapes(n => cats.find(c => c.categoryName === n)?.score ?? 0) : null;
+    const vs = cats ? verticalFromBlendshapes(n => cats.find(c => c.categoryName === n)?.score ?? 0) : null;
+    const vb = vs && vs.blink < BLINK_FREEZE ? vs.v : null;   // null pendant un vrai clignement
+
+    // ── VERTICAL : indépendant du calcul horizontal (ne dépend plus de la détection de l'iris) ──
+    if (vb !== null) lastV += (vb - lastV) * 0.3;
+    if (pitch !== null) { if (!pitchInit) { lastPitch = pitch; pitchInit = true; } else lastPitch += (pitch - lastPitch) * 0.3; }
+    if (vb !== null) {
+      const comp = pitchInit ? DEG_TO_BS * headComp * (lastPitch - centerPitch) : 0;   // + inclinaison de la tête vers le bas
+      const dv = (invertH ? -1 : 1) * (lastV - centerV + comp);   // « Inverser » : vertical inversé aussi
+      if (dv >  vertThresh) vertState = 'down';
+      else if (dv < -vertThresh) vertState = 'up';
+      cursorFy = vertState === 'up' ? 0.25 : 0.75;
+    }
+
     if (gaze) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
       lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
-      if (vb !== null) lastV += (vb - lastV) * 0.3;
-      if (pitch !== null) { if (!pitchInit) { lastPitch = pitch; pitchInit = true; } else lastPitch += (pitch - lastPitch) * 0.3; }
       // Centrage : moyenne du regard au repos sur CENTER_FRAMES images (valeurs brutes)
       if (centering) {
         centering.n++;
-        if (centering.n > CENTER_SETTLE) { centering.m++; centering.sh += gaze.h; centering.sv += (vb ?? 0); centering.sp += (pitch ?? lastPitch); }
+        if (centering.n > CENTER_SETTLE) { centering.m++; centering.sh += gaze.h; centering.sv += (vb ?? lastV); centering.sp += (pitch ?? lastPitch); }
         if (centering.n >= CENTER_FRAMES) {
           centerH = centering.sh / centering.m; centerV = centering.sv / centering.m; centerPitch = centering.sp / centering.m;
           centering = null;
@@ -375,11 +392,6 @@ function drawFrame(res) {
             `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
         }
       }
-      const comp = pitchInit ? DEG_TO_BS * headComp * (lastPitch - centerPitch) : 0;   // + inclinaison de la tête vers le bas
-      const dv = (invertH ? -1 : 1) * (lastV - centerV + comp);   // « Inverser » : vertical inversé aussi
-      if (dv >  vertThresh) vertState = 'down';
-      else if (dv < -vertThresh) vertState = 'up';
-      cursorFy = vertState === 'up' ? 0.25 : 0.75;
       const sign = invertH ? 1 : -1;   // horizontal : inversé quand « Inverser » est DÉCOCHÉ (le vertical reste inversé quand il est coché)
       const targetFx = Math.max(0, Math.min(1, 0.5 + sign * (lastGaze.h - centerH) * gainH));
       cursorFx += (targetFx - cursorFx) * smoothing;
