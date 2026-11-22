@@ -66,10 +66,10 @@
   <div class="panel">
     <button id="btn-start">▶ START</button>
     <label><span>Gain H</span>
-      <input id="num-gainh" type="number" min="1" max="100" step="1" value="30">
+      <input id="num-gainh" type="number" min="1" max="100" step="1" value="50">
     </label>
-    <label><span>Vitesse <b id="smooth-v">0.70</b></span>
-      <input id="num-smooth" type="range" min="0" max="1" step="0.01" value="0.7">
+    <label><span>Vitesse <b id="smooth-v">0.50</b></span>
+      <input id="num-smooth" type="range" min="0" max="1" step="0.01" value="0.5">
     </label>
     <label style="display:flex;align-items:center;gap:4px">
       <input id="chk-inv" type="checkbox" checked><span>Inverser</span>
@@ -94,7 +94,7 @@
 let running  = false;
 let lastGaze = { h: 0, v: 0 };
 let centerH  = 0;
-let gainH    = 30;
+let gainH    = 50;
 let showDbg  = false;
 let faceBB   = { cx: 0.5, cy: 0.5, hw: 0.30 };
 let lastCrop = { sx: 0, sy: 0, sw: 1, sh: 1 };
@@ -105,7 +105,7 @@ let cursorFx   = 0.5;
 let cursorFy   = 0.5;
 // Vitesse 0..1 → lissage 0.8..0.1 (plus la vitesse est grande, moins il y a de lissage) → coefficient 10^(-4·lissage)
 const smoothFromSpeed = v => Math.pow(10, -4 * (0.8 - 0.7 * v));
-let smoothing  = smoothFromSpeed(0.7);
+let smoothing  = smoothFromSpeed(0.5);
 let invertH    = true;
 let centerV    = 0;
 let vertThresh = 0.12;   // seuil sur l'écart (bas − haut) des blendshapes, après centrage
@@ -113,7 +113,7 @@ let lastV      = 0;      // haut/bas lissé (blendshapes)
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
 let showVideo  = false;   // image caméra masquée par défaut
 let centering  = null;            // mesure du regard au repos en cours (mire affichée)
-const CENTER_FRAMES = 45;         // ≈ 1,5 s
+const CENTER_FRAMES = 135;        // ≈ 4,5 s
 let faceSeen = false, gazeOk = false;
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
