@@ -22,6 +22,13 @@
     #videoel { display: none; }
     #overlay { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
     #video-wrap:fullscreen { width: 100vw; height: 100vh; aspect-ratio: auto; max-width: none; border: none; }
+    /* Bouton Centrer visible aussi en plein écran (en bas à droite) */
+    #btn-ctr-fs { display: none; }
+    #video-wrap:fullscreen #btn-ctr-fs, #video-wrap:-webkit-full-screen #btn-ctr-fs {
+      display: block; position: absolute; right: 16px; bottom: 16px; z-index: 5;
+      line-height: normal; padding: 10px 16px; font-size: .95em; background: rgba(0,0,0,.55);
+    }
+    #video-wrap:-webkit-full-screen { width: 100vw; height: 100vh; aspect-ratio: auto; max-width: none; border: none; }
     .panel {
       background: var(--panel); border: 1px solid #1e1e30;
       border-radius: 4px; padding: 7px 12px;
@@ -52,6 +59,7 @@
   <div id="video-wrap">
     <video id="videoel" width="640" height="480"></video>
     <canvas id="overlay" width="640" height="480"></canvas>
+    <button id="btn-ctr-fs" title="Recentrer le regard">◎ Centrer</button>
   </div>
 
   <div class="panel">
@@ -63,10 +71,7 @@
       <input id="num-smooth" type="number" min="0.01" max="0.99" step="0.01" value="0.06">
     </label>
     <label style="display:flex;align-items:center;gap:4px">
-      <input id="chk-inv" type="checkbox"><span>Inv H</span>
-    </label>
-    <label style="display:flex;align-items:center;gap:4px">
-      <input id="chk-fixed" type="checkbox"><span>Tête fixe</span>
+      <input id="chk-inv" type="checkbox" checked><span>Inv H</span>
     </label>
     <label><span>Seuil V</span>
       <input id="num-thresh" type="number" min="0.5" max="20" step="0.5" value="2">
@@ -98,19 +103,17 @@ let currentStream = null;
 let cursorFx   = 0.5;
 let cursorFy   = 0.5;
 let smoothing  = 0.06;
-let invertH    = false;
+let invertH    = true;
 let centerV    = 0;
 let vertThresh = 0.02;
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
-let fixedHead  = false;
 let showVideo  = true;
+let centering  = null;            // mesure du regard au repos en cours (mire affichée)
+const CENTER_FRAMES = 45;         // ≈ 1,5 s
+let faceSeen = false, gazeOk = false;
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
 document.getElementById('chk-inv').addEventListener('change', e => { invertH = e.target.checked; });
-document.getElementById('chk-fixed').addEventListener('change', e => {
-  fixedHead = e.target.checked;
-  if (fixedHead) { centerH = lastGaze.h; centerV = lastGaze.v; }
-});
 const numGainH  = document.getElementById('num-gainh');
 const numSmooth = document.getElementById('num-smooth');
 numGainH.addEventListener('change', () => {
@@ -156,8 +159,7 @@ const hl = await _creerAvecRepli(FaceLandmarker, fs, {
   outputFaceBlendshapes: false
 });
 
-document.getElementById('status').textContent =
-  'Prêt — ▶ START puis ◎ Centrer en regardant droit devant';
+document.getElementById('status').textContent = 'Prêt';
 
 // ── REGARD : repère 3D visage + détection iris par pixels ────────────────────
 // 1. Repère 3D (r/u/f) depuis landmarks stables → compensation pose de tête
@@ -255,24 +257,37 @@ function gazeFromLandmarks(lm) {
   return { h, v };
 }
 
-// ── REGARD 2D (mode tête fixe) ────────────────────────────────────────────────
-// Pas de repère 3D : offset iris/coins en 2D pur, valide uniquement si la tête
-// ne tourne pas (la perspective n'est donc plus compensée).
-function gazeFromLandmarks2D(lm) {
-  if (!lm || lm.length < 478) return null;
-  const earW1 = Math.abs(lm[133].x - lm[33].x),  earW2 = Math.abs(lm[263].x - lm[362].x);
-  const earH1 = Math.abs(lm[159].y - lm[145].y),  earH2 = Math.abs(lm[386].y - lm[374].y);
-  if (earW1 < 0.005 || earW2 < 0.005) return null;
-  if (earH1/earW1 < 0.04 && earH2/earW2 < 0.04) return null;
-  const iris1 = irisPixel(lm, 33,  133, 468) ?? { x: lm[468].x, y: lm[468].y };
-  const iris2 = irisPixel(lm, 362, 263, 473) ?? { x: lm[473].x, y: lm[473].y };
-  const cx1 = (lm[33].x + lm[133].x) / 2, cy1 = (lm[33].y + lm[133].y) / 2;
-  const cx2 = (lm[362].x + lm[263].x) / 2, cy2 = (lm[362].y + lm[263].y) / 2;
-  const h = ((iris1.x - cx1) / earW1 + (iris2.x - cx2) / earW2) / 2;
-  const v = ((iris1.y - cy1) / earW1 + (iris2.y - cy2) / earW2) / 2;
-  dbgH = h; dbgV = v;
-  dbgIris1 = iris1; dbgIris2 = iris2;
-  return { h, v };
+// ── MIRE DE CENTRAGE : regardez le point rouge ──────────────────────────────
+function drawMire(W, H, k) {
+  const x = W / 2, y = H / 2;
+  const pulse = 1 + 0.08 * Math.sin(performance.now() / 160);
+  const halo = draw => {
+    ctx2d.lineCap = 'round';
+    ctx2d.strokeStyle = 'rgba(0,0,0,.75)'; ctx2d.lineWidth = 9 * k; draw();
+    ctx2d.strokeStyle = '#ffffff'; ctx2d.lineWidth = 4 * k; draw();
+  };
+  ctx2d.save();
+  halo(() => { ctx2d.beginPath(); ctx2d.arc(x, y, 46 * k * pulse, 0, Math.PI * 2); ctx2d.stroke(); });
+  halo(() => { ctx2d.beginPath(); ctx2d.arc(x, y, 22 * k, 0, Math.PI * 2); ctx2d.stroke(); });
+  halo(() => { ctx2d.beginPath();
+    ctx2d.moveTo(x - 70 * k, y); ctx2d.lineTo(x - 30 * k, y); ctx2d.moveTo(x + 30 * k, y); ctx2d.lineTo(x + 70 * k, y);
+    ctx2d.moveTo(x, y - 70 * k); ctx2d.lineTo(x, y - 30 * k); ctx2d.moveTo(x, y + 30 * k); ctx2d.lineTo(x, y + 70 * k); ctx2d.stroke(); });
+  ctx2d.beginPath(); ctx2d.arc(x, y, 9 * k, 0, Math.PI * 2); ctx2d.fillStyle = '#ff2a2a'; ctx2d.fill();
+  const p = Math.min(1, centering.n / CENTER_FRAMES), R = 66 * k;
+  ctx2d.lineCap = 'round';
+  ctx2d.beginPath(); ctx2d.arc(x, y, R, 0, Math.PI * 2);
+  ctx2d.strokeStyle = 'rgba(0,0,0,.6)'; ctx2d.lineWidth = 12 * k; ctx2d.stroke();
+  ctx2d.strokeStyle = 'rgba(255,255,255,.45)'; ctx2d.lineWidth = 6 * k; ctx2d.stroke();
+  if (p > 0) {
+    const a0 = -Math.PI / 2, a1 = a0 + p * Math.PI * 2;
+    ctx2d.beginPath(); ctx2d.arc(x, y, R, a0, a1); ctx2d.strokeStyle = '#000'; ctx2d.lineWidth = 12 * k; ctx2d.stroke();
+    ctx2d.beginPath(); ctx2d.arc(x, y, R, a0, a1); ctx2d.strokeStyle = '#00e5ff'; ctx2d.lineWidth = 7 * k; ctx2d.stroke();
+  }
+  const msg = !faceSeen ? 'Visage non détecté' : !gazeOk ? 'Ouvrez grand les yeux' : 'Regardez la mire';
+  ctx2d.font = `bold ${Math.round(22 * k)}px -apple-system, system-ui, sans-serif`; ctx2d.textAlign = 'center'; ctx2d.textBaseline = 'alphabetic';
+  ctx2d.lineWidth = 6 * k; ctx2d.strokeStyle = 'rgba(0,0,0,.8)'; ctx2d.strokeText(msg, x, y + 124 * k);
+  ctx2d.fillStyle = (faceSeen && gazeOk) ? '#fff' : '#ffd24a'; ctx2d.fillText(msg, x, y + 124 * k);
+  ctx2d.restore();
 }
 
 // ── RENDU ─────────────────────────────────────────────────────────────────────
@@ -305,17 +320,23 @@ function drawFrame(res) {
   }
 
   // Calcul du regard
+  faceSeen = !!res.faceLandmarks?.length;
+  if (!faceSeen) gazeOk = false;
   if (res.faceLandmarks?.length) {
-    const gaze = fixedHead
-      ? gazeFromLandmarks2D(res.faceLandmarks[0])
-      : gazeFromLandmarks(res.faceLandmarks[0]);
+    const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
+    gazeOk = !!gaze;
     if (gaze) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
       lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
-      // En mode tête fixe : auto-centrage par EMA très lente
-      if (fixedHead) {
-        centerH += (lastGaze.h - centerH) * 0.002;
-        centerV += (lastGaze.v - centerV) * 0.002;
+      // Centrage : moyenne du regard au repos sur CENTER_FRAMES images (valeurs brutes)
+      if (centering) {
+        centering.n++; centering.sh += gaze.h; centering.sv += gaze.v;
+        if (centering.n >= CENTER_FRAMES) {
+          centerH = centering.sh / centering.n; centerV = centering.sv / centering.n;
+          centering = null;
+          document.getElementById('status').textContent =
+            `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
+        }
       }
       const dv = lastGaze.v - centerV;
       if (dv >  vertThresh) vertState = 'down';
@@ -358,6 +379,9 @@ function drawFrame(res) {
   ctx2d.strokeStyle = 'rgba(255,255,255,0.18)';
   ctx2d.lineWidth = Math.max(1, k);
   ctx2d.strokeRect(1, 1, W - 2, H - 2);
+
+  // Mire de centrage
+  if (centering) drawMire(W, H, k);
 
   // Debug
   if (showDbg) {
@@ -409,8 +433,7 @@ const _onBtnStart = async () => {
     running = true; lastT = -1;
     frameLoop();
     btnStart.textContent = '⏹ STOP'; btnStart.classList.add('on');
-    document.getElementById('status').textContent =
-      'Actif — regarde droit devant et clique ◎ Centrer';
+    startCentering();
   } else {
     running = false;
     cancelAnimationFrame(animFrame); animFrame = null;
@@ -437,13 +460,13 @@ for (const ev of ['pointerdown', 'keydown', 'touchstart']) {
 }
 _tryStart();
 
-// ── CENTRER ───────────────────────────────────────────────────────────────────
-document.getElementById('btn-ctr').addEventListener('click', () => {
-  centerH = lastGaze.h;
-  centerV = lastGaze.v;
-  document.getElementById('status').textContent =
-    `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
-});
+// ── CENTRER (panneau + bouton discret en plein écran) ─────────────────────────
+function startCentering() {
+  centering = { n: 0, sh: 0, sv: 0 };
+  document.getElementById('status').textContent = 'Centrage… regardez la mire';
+}
+document.getElementById('btn-ctr').addEventListener('click', startCentering);
+document.getElementById('btn-ctr-fs').addEventListener('click', startCentering);
 
 // ── IMAGE CAMÉRA ──────────────────────────────────────────────────────────────
 const btnVideo = document.getElementById('btn-video');
