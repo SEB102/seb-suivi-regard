@@ -113,7 +113,9 @@ let lastV      = 0;      // haut/bas lissé (blendshapes)
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
 let showVideo  = false;   // image caméra masquée par défaut
 let centering  = null;            // mesure du regard au repos en cours (mire affichée)
-const CENTER_FRAMES = 300;        // ≈ 10 s à 30 images/s
+const CENTER_SETTLE = 90;         // ≈ 3 s à 30 images/s : le regard se pose, rien n'est mesuré
+const CENTER_MEASURE = 300;       // ≈ 10 s : moyenne du regard
+const CENTER_FRAMES = CENTER_SETTLE + CENTER_MEASURE;   // ≈ 13 s au total
 let faceSeen = false, gazeOk = false;
 
 document.getElementById('chk-dbg').addEventListener('change', e => { showDbg = e.target.checked; });
@@ -345,9 +347,10 @@ function drawFrame(res) {
       if (vb !== null) lastV += (vb - lastV) * 0.3;
       // Centrage : moyenne du regard au repos sur CENTER_FRAMES images (valeurs brutes)
       if (centering) {
-        centering.n++; centering.sh += gaze.h; centering.sv += (vb ?? 0);
+        centering.n++;
+        if (centering.n > CENTER_SETTLE) { centering.m++; centering.sh += gaze.h; centering.sv += (vb ?? 0); }
         if (centering.n >= CENTER_FRAMES) {
-          centerH = centering.sh / centering.n; centerV = centering.sv / centering.n;
+          centerH = centering.sh / centering.m; centerV = centering.sv / centering.m;
           centering = null;
           document.getElementById('status').textContent =
             `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
@@ -477,7 +480,7 @@ _tryStart();
 
 // ── CENTRER (panneau + bouton discret en plein écran) ─────────────────────────
 function startCentering() {
-  centering = { n: 0, sh: 0, sv: 0 };
+  centering = { n: 0, m: 0, sh: 0, sv: 0 };
   document.getElementById('status').textContent = 'Centrage… regardez la mire';
 }
 document.getElementById('btn-ctr').addEventListener('click', startCentering);
