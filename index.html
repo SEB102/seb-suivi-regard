@@ -77,6 +77,9 @@
     <label><span>Seuil V</span>
       <input id="num-thresh" type="number" min="1" max="90" step="1" value="12">
     </label>
+    <label><span>Comp. tête %</span>
+      <input id="num-comp" type="number" min="0" max="300" step="10" value="100">
+    </label>
     <button id="btn-ctr" title="Regarde droit devant puis clique pour centrer">◎ Centrer</button>
     <button id="btn-video" title="Afficher/masquer l'image de la caméra">🖼 PAS D'IMAGE</button>
     <label style="display:flex;align-items:center;gap:4px">
@@ -110,6 +113,11 @@ let invertH    = true;
 let centerV    = 0;
 let vertThresh = 0.12;   // seuil sur l'écart (bas − haut) des blendshapes, après centrage
 let lastV      = 0;      // haut/bas lissé (blendshapes)
+// Compensation de l'inclinaison de la tête : le regard « dans la tête » (blendshapes) change quand on penche la tête,
+// alors que le regard sur l'écran = regard dans la tête + inclinaison. Pitch positif = tête vers le bas.
+const DEG_TO_BS = 0.029;     // ≈ 1 / (0,6 rad ≈ 34° par unité de blendshape) : 1° d'inclinaison ≈ 0,029
+let headComp    = 1;         // 1 = 100 % (réglage « Comp. tête % »), 0 = désactivé
+let lastPitch = 0, centerPitch = 0, pitchInit = false;
 let vertState  = 'down'; // 'up' | 'down' (binaire, avec zone morte = maintien)
 let showVideo  = false;   // image caméra masquée par défaut
 let centering  = null;            // mesure du regard au repos en cours (mire affichée)
@@ -130,6 +138,10 @@ numSmooth.addEventListener('input', () => {
   const v = Math.max(0, Math.min(1, parseFloat(numSmooth.value) || 0));
   smoothing = smoothFromSpeed(v);
   document.getElementById('smooth-v').textContent = v.toFixed(2);
+});
+document.getElementById('num-comp').addEventListener('change', e => {
+  const p = Math.max(0, Math.min(300, parseFloat(e.target.value)));
+  headComp = (isNaN(p) ? 100 : p) / 100; e.target.value = Math.round(headComp * 100);
 });
 const numThresh = document.getElementById('num-thresh');
 numThresh.addEventListener('change', () => {
@@ -163,7 +175,8 @@ const hl = await _creerAvecRepli(FaceLandmarker, fs, {
   },
   runningMode: 'VIDEO',
   numFaces: 1,
-  outputFaceBlendshapes: true
+  outputFaceBlendshapes: true,
+  outputFacialTransformationMatrixes: true
 });
 
 document.getElementById('status').textContent = 'Prêt';
@@ -264,6 +277,9 @@ function gazeFromLandmarks(lm) {
   return { h, v };
 }
 
+// Inclinaison de la tête (degrés, positif = vers le bas) depuis la matrice de transformation du visage
+function pitchFromMatrix(d) { return Math.atan2(d[6], d[10]) * 180 / Math.PI; }
+
 // ── HAUT / BAS depuis les blendshapes du modèle (positif = regard vers le bas) ──
 function verticalFromBlendshapes(get) {
   const down = (get('eyeLookDownLeft') + get('eyeLookDownRight')) / 2;
@@ -340,23 +356,27 @@ function drawFrame(res) {
     const gaze = gazeFromLandmarks(res.faceLandmarks[0]);
     gazeOk = !!gaze;
     const cats = res.faceBlendshapes?.[0]?.categories;
+    const mats = res.facialTransformationMatrixes;
+    const pitch = mats && mats.length ? pitchFromMatrix(mats[0].data) : null;
     const vb = cats ? verticalFromBlendshapes(n => cats.find(c => c.categoryName === n)?.score ?? 0) : null;
     if (gaze) {
       lastGaze.h += (gaze.h - lastGaze.h) * 0.15;
       lastGaze.v += (gaze.v - lastGaze.v) * 0.15;
       if (vb !== null) lastV += (vb - lastV) * 0.3;
+      if (pitch !== null) { if (!pitchInit) { lastPitch = pitch; pitchInit = true; } else lastPitch += (pitch - lastPitch) * 0.3; }
       // Centrage : moyenne du regard au repos sur CENTER_FRAMES images (valeurs brutes)
       if (centering) {
         centering.n++;
-        if (centering.n > CENTER_SETTLE) { centering.m++; centering.sh += gaze.h; centering.sv += (vb ?? 0); }
+        if (centering.n > CENTER_SETTLE) { centering.m++; centering.sh += gaze.h; centering.sv += (vb ?? 0); centering.sp += (pitch ?? lastPitch); }
         if (centering.n >= CENTER_FRAMES) {
-          centerH = centering.sh / centering.m; centerV = centering.sv / centering.m;
+          centerH = centering.sh / centering.m; centerV = centering.sv / centering.m; centerPitch = centering.sp / centering.m;
           centering = null;
           document.getElementById('status').textContent =
             `Centré ✓  (h=${centerH.toFixed(3)}  v=${centerV.toFixed(3)})`;
         }
       }
-      const dv = (invertH ? -1 : 1) * (lastV - centerV);   // « Inverser » : vertical inversé aussi
+      const comp = pitchInit ? DEG_TO_BS * headComp * (lastPitch - centerPitch) : 0;   // + inclinaison de la tête vers le bas
+      const dv = (invertH ? -1 : 1) * (lastV - centerV + comp);   // « Inverser » : vertical inversé aussi
       if (dv >  vertThresh) vertState = 'down';
       else if (dv < -vertThresh) vertState = 'up';
       cursorFy = vertState === 'up' ? 0.25 : 0.75;
@@ -417,7 +437,7 @@ function drawFrame(res) {
     ctx2d.font = `${Math.round(11*k)}px monospace`;
     ctx2d.textAlign = 'left'; ctx2d.textBaseline = 'top';
     ctx2d.fillStyle = 'rgba(0,255,130,0.95)';
-    ctx2d.fillText(`h ${dbgH.toFixed(3)}  haut/bas ${lastV.toFixed(3)} (blendshapes)`, 8*k, 8*k);
+    ctx2d.fillText(`h ${dbgH.toFixed(3)}  haut/bas ${lastV.toFixed(3)}  tête ${(lastPitch - centerPitch).toFixed(1)}°`, 8*k, 8*k);
     ctx2d.fillText(`ctr h ${centerH.toFixed(3)}  v ${centerV.toFixed(3)}`, 8*k, 22*k);
     ctx2d.fillText(`vert: ${vertState}  iris ${dbgIris1 ? 'G✓' : 'G✗'} ${dbgIris2 ? 'D✓' : 'D✗'}`, 8*k, 36*k);
     ctx2d.textAlign = 'start'; ctx2d.textBaseline = 'alphabetic';
@@ -480,7 +500,7 @@ _tryStart();
 
 // ── CENTRER (panneau + bouton discret en plein écran) ─────────────────────────
 function startCentering() {
-  centering = { n: 0, m: 0, sh: 0, sv: 0 };
+  centering = { n: 0, m: 0, sh: 0, sv: 0, sp: 0 };
   document.getElementById('status').textContent = 'Centrage… regardez la mire';
 }
 document.getElementById('btn-ctr').addEventListener('click', startCentering);
