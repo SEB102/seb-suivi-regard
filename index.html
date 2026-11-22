@@ -357,7 +357,7 @@ function drawFrame(res) {
       if (dv >  vertThresh) vertState = 'down';
       else if (dv < -vertThresh) vertState = 'up';
       cursorFy = vertState === 'up' ? 0.25 : 0.75;
-      const sign = invertH ? -1 : 1;
+      const sign = invertH ? 1 : -1;   // horizontal : inversé quand « Inverser » est DÉCOCHÉ (le vertical reste inversé quand il est coché)
       const targetFx = Math.max(0, Math.min(1, 0.5 + sign * (lastGaze.h - centerH) * gainH));
       cursorFx += (targetFx - cursorFx) * smoothing;
     }
